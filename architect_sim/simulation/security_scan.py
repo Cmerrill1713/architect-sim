@@ -372,8 +372,10 @@ def _check_auth_middleware(bp, content: str, file_path: str, lang: str) -> list:
     else:
         return findings
 
-    # Skip health/metrics/docs endpoints
-    skip_paths = {"/health", "/live", "/ready", "/metrics", "/version", "/docs", "/swagger"}
+    # Skip health/metrics/docs/internal endpoints
+    skip_paths = {"/health", "/live", "/ready", "/metrics", "/version", "/docs", "/swagger",
+                  "/status", "/ping", "/info", "/reload", "/rerank", "/embed",
+                  "/v1/chat/completions", "/v1/models", "/v1/embeddings"}
 
     lines = content.split("\n")
 
