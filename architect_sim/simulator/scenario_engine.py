@@ -31,6 +31,14 @@ from ..profiling.hardware import (
 )
 from ..simulation.contract_checker import check_contracts, check_dependency_drift, check_circular_deps
 from ..simulation.flow_tracer import trace_all_flows
+try:
+    from ..simulation.schema_checker import check_schemas
+except ImportError:
+    check_schemas = None
+try:
+    from ..simulation.security_scan import check_security
+except ImportError:
+    check_security = None
 
 
 # ---------------------------------------------------------------------------
@@ -776,15 +784,28 @@ def run_scenario(
         if mf is not None:
             model_fit = mf
 
-    # Re-run contract checks on mutated state
+    # Re-run full simulation on mutated state (same checks as simulate_all)
     new_findings = []
     new_findings.extend(check_contracts(bp_copy, config))
+    if check_schemas:
+        new_findings.extend(check_schemas(bp_copy, config))
     new_findings.extend(check_dependency_drift(bp_copy, config))
     new_findings.extend(check_circular_deps(bp_copy))
+    if check_security:
+        new_findings.extend(check_security(bp_copy, config))
 
-    # Re-run flow tracing
     flow_traces, flow_findings = trace_all_flows(bp_copy, config)
     new_findings.extend(flow_findings)
+
+    # Deduplicate (same logic as simulate_all)
+    seen = set()
+    deduped = []
+    for f in new_findings:
+        key = (f.finding_type, f.service, f.endpoint)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(f)
+    new_findings = deduped
 
     # Re-grade
     grade_after = score_system(bp_copy, new_findings, flow_traces, config)
