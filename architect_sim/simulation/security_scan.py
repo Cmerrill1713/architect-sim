@@ -74,7 +74,7 @@ COMMAND_INJECTION_PATTERNS = [
     # Python
     {"name": "os.system (Python)", "regex": r'os\.system\(\s*(?:f["\']|["\'].*["\']\s*\+|\w+\s*\+)', "langs": ["python"], "severity": "critical"},
     {"name": "subprocess Shell (Python)", "regex": r'subprocess\.(?:call|run|Popen)\(.*shell\s*=\s*True', "langs": ["python"], "severity": "critical"},
-    {"name": "eval (Python)", "regex": r'\beval\(\s*(?![\'"]\s*\))', "langs": ["python"], "severity": "critical"},
+    {"name": "eval (Python)", "regex": r'(?<!\.)(?<!model\.)(?<!self\.)\beval\(\s*(?![\'"]\s*\))', "langs": ["python"], "severity": "critical"},
     # JS/TS
     {"name": "child_process.exec (JS)", "regex": r'child_process\.exec\(\s*(?:`[^`]*\$\{|["\'].*["\']\s*\+)', "langs": ["node"], "severity": "critical"},
     {"name": "eval (JS)", "regex": r'\beval\(\s*(?![\'"]\s*\))', "langs": ["node"], "severity": "critical"},
@@ -334,6 +334,19 @@ def _check_patterns(patterns: list, content: str, file_path: str, service: str, 
                 line = ""
 
             if _is_comment(line, lang):
+                continue
+
+            # Skip lines with explicit security suppressions
+            if 'nolint:gosec' in line or 'nosec' in line or '# noqa' in line or 'SAFETY:' in line:
+                continue
+
+            # Skip PyTorch model.eval() — not Python eval()
+            if pat["name"] == "eval (Python)" and ('model.eval' in line or '.eval()' in line):
+                if 'self.' in line or 'model' in line.lower():
+                    continue
+
+            # Skip string literals containing "eval" (not function calls)
+            if pat["name"] == "eval (Python)" and 'eval(' not in line:
                 continue
 
             findings.append(Finding(
