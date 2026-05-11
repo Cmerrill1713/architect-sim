@@ -10,6 +10,7 @@ from .extractors.go_routes import extract_go_routes
 from .extractors.go_calls import extract_go_calls
 from .extractors.rust_routes import extract_rust_routes, extract_rust_calls
 from .extractors.python_routes import extract_python_routes, extract_python_calls
+from .extractors.ts_routes import extract_ts_routes, extract_ts_calls
 from .extractors.temporal import (
     enrich_blueprints_temporal, scan_docs_for_references,
     find_doc_drift, format_temporal_report,
@@ -61,6 +62,9 @@ def extract_all(config: Config) -> dict:
         elif lang == "python":
             bp.endpoints = extract_python_routes(svc_name, port, svc_dir)
             bp.outbound_calls = extract_python_calls(svc_name, svc_dir, config)
+        elif lang in ("node", "typescript"):
+            bp.endpoints = extract_ts_routes(svc_name, port, svc_dir)
+            bp.outbound_calls = extract_ts_calls(svc_name, svc_dir, config)
 
         if bp.endpoints or bp.outbound_calls:
             blueprints[svc_name] = bp
