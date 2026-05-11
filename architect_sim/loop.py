@@ -26,6 +26,8 @@ from .reporting.json_report import generate_json
 from .reporting.recommendations import generate_recommendations
 from .reporting.ledger import Ledger
 from .research.tech_upgrades import scan_for_technologies, format_tech_report
+from .simulator.scenario_engine import run_all_presets, format_scenario_report
+from .simulator.outcome_tracker import OutcomeTracker
 
 
 def extract_all(config: Config) -> dict:
@@ -208,11 +210,45 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     tech_upgrades = scan_for_technologies(str(config.root), blueprints)
     print(f"  {len(tech_upgrades)} upgrade recommendations ({time.time() - start:.1f}s)", file=sys.stderr)
 
+    # Phase 9: "What if" scenario simulation
+    print("Phase 9: Running scenario simulations...", file=sys.stderr)
+    start = time.time()
+    scenario_results = run_all_presets(blueprints, findings, grade, all_llm_calls, hardware, config)
+    print(f"  {len(scenario_results)} scenarios simulated ({time.time() - start:.1f}s)", file=sys.stderr)
+    for sr in scenario_results[:3]:
+        delta = sr.score_delta or 0
+        prob = getattr(sr, 'probability_success', 0) or 0
+        direction = "+" if delta > 0 else ""
+        print(f"    {sr.scenario.name}: {direction}{delta:.1f} pts ({prob*100:.0f}% confidence)", file=sys.stderr)
+
+    # Phase 10: Outcome learning (verify past predictions)
+    print("Phase 10: Checking past predictions...", file=sys.stderr)
+    tracker = OutcomeTracker(str(config.root))
+    newly_verified = tracker.verify_predictions(grade, findings)
+    if newly_verified:
+        print(f"  Verified {newly_verified} past predictions (avg accuracy: {tracker.learning_state.get('avg_accuracy', 0):.0%})", file=sys.stderr)
+    else:
+        print(f"  No past predictions to verify (first run or no changes since last run)", file=sys.stderr)
+
+    # Record current scenario predictions for future verification
+    for sr in scenario_results:
+        delta = sr.score_delta or 0
+        if delta > 1.0:  # Only track meaningful predictions
+            tracker.record_prediction(
+                scenario_name=sr.scenario.name,
+                predicted_delta=delta,
+                predicted_dims=sr.dimension_deltas or {},
+                predicted_resolved=sr.findings_resolved or 0,
+                probability=getattr(sr, 'probability_success', 0.5),
+            )
+
     if output_format == "json":
         report = generate_json(grade, findings, traces, blueprints)
     else:
-        # Action plan + tech upgrades go FIRST
+        # Action plan + scenarios + tech upgrades go FIRST
         report = action_plan + "\n\n---\n\n"
+        if scenario_results:
+            report += format_scenario_report(scenario_results) + "\n\n---\n\n"
         if tech_upgrades:
             report += format_tech_report(tech_upgrades) + "\n\n---\n\n"
         report += generate_report(grade, findings, traces, blueprints)
@@ -230,6 +266,10 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
         trend = history.format_trend()
         if trend and output_format != "json":
             report += "\n\n" + trend
+        # Append learning report
+        learning = tracker.format_learning_report()
+        if learning and output_format != "json":
+            report += "\n\n" + learning
     except Exception:
         pass  # Score history is best-effort
 
