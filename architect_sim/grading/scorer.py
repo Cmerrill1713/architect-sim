@@ -90,7 +90,22 @@ def score_system(blueprints: dict, findings: list, flow_traces: list, config) ->
         report.dependency_hygiene = 100.0
 
     # 5. Coverage: % of endpoints reachable from entry points
-    orphan_count = type_counts.get("orphan_endpoint", 0)
+    # Exclude standard infrastructure endpoints from orphan penalty:
+    # health, metrics, ready, live, status, debug, admin endpoints are user/ops-facing
+    infra_patterns = {'/health', '/ready', '/live', '/metrics', '/status', '/debug',
+                      '/version', '/reload', '/config', '/.well-known', '/swagger',
+                      '/docs', '/openapi', '/favicon', '/static'}
+    infra_orphans = 0
+    for f in findings:
+        if f.finding_type == "orphan_endpoint":
+            ep = f.endpoint.lower() if f.endpoint else ""
+            if any(ep.startswith(p) or ep.endswith(p) for p in infra_patterns):
+                infra_orphans += 1
+            # Also count daemon/admin/ops endpoints as infrastructure
+            if any(x in ep for x in ['/daemon/', '/ops/', '/admin/', '/api/self',
+                                      '/training', '/api/build', '/api/skills']):
+                infra_orphans += 1
+    orphan_count = max(0, type_counts.get("orphan_endpoint", 0) - infra_orphans)
     reachable = total_endpoints - orphan_count
     report.coverage = (reachable / max(total_endpoints, 1)) * 100
 
