@@ -23,6 +23,9 @@ from .grading.scorer import score_system
 from .extractors.llm_calls import extract_llm_calls_all_languages, format_llm_report
 from .runtime.log_ingestion import auto_discover_logs, ingest_logs, correlate_with_findings, format_runtime_report
 from .profiling.hardware import detect_hardware, recommend_models, format_hardware_report
+from .profiling.latency_estimator import estimate_all_flows as estimate_latency, format_latency_report
+from .profiling.llm_latency import compare_models_for_task, build_routing_table, format_llm_latency_report, format_routing_table
+from .fixing.codegen import generate_optimizations_for_service, format_codegen_report
 from .scoring.history import ScoreHistory
 from .reporting.markdown_report import generate_report
 from .reporting.json_report import generate_json
@@ -204,6 +207,50 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     model_recs = recommend_models(hardware, task_types=task_counts if task_counts else None)
     print(f"  {hardware.cpu_model}, {hardware.ram_total_gb:.0f}GB, {len(model_recs)} models fit ({time.time() - start:.1f}s)", file=sys.stderr)
 
+    # Phase 6b: Latency estimation (DAG walk)
+    print("Phase 6b: Estimating request latencies...", file=sys.stderr)
+    start = time.time()
+    flow_latencies = estimate_latency(blueprints, config, runtime_events, hardware, all_llm_calls)
+    if flow_latencies:
+        slowest = max(flow_latencies, key=lambda f: f.total_ms)
+        print(f"  {len(flow_latencies)} flows estimated, slowest: {slowest.flow_name} ({slowest.total_ms:.0f}ms) ({time.time() - start:.1f}s)", file=sys.stderr)
+    else:
+        print(f"  No flows to estimate ({time.time() - start:.1f}s)", file=sys.stderr)
+
+    # Phase 6c: LLM latency comparison + routing table
+    print("Phase 6c: Building model routing table...", file=sys.stderr)
+    start = time.time()
+    llm_comparisons = []
+    for task_type in task_counts:
+        try:
+            comp = compare_models_for_task(task_type, hardware)
+            llm_comparisons.append(comp)
+        except Exception:
+            pass
+    routing_table = {}
+    if llm_comparisons:
+        try:
+            routing_table = build_routing_table(llm_comparisons, hardware)
+        except Exception:
+            pass
+    if routing_table:
+        print(f"  {len(routing_table)} task types routed ({time.time() - start:.1f}s)", file=sys.stderr)
+    else:
+        print(f"  No routing table built ({time.time() - start:.1f}s)", file=sys.stderr)
+
+    # Phase 6d: Generate optimization code
+    print("Phase 6d: Generating optimization code...", file=sys.stderr)
+    start = time.time()
+    all_optimizations = {}
+    for name, bp in blueprints.items():
+        svc_findings = [f for f in findings if f.service == name]
+        svc_llm = [c for c in all_llm_calls if c.service_name == name]
+        opts = generate_optimizations_for_service(bp, svc_findings, svc_llm)
+        if opts:
+            all_optimizations[name] = opts
+    total_opts = sum(len(v) for v in all_optimizations.values())
+    print(f"  {total_opts} code blocks for {len(all_optimizations)} services ({time.time() - start:.1f}s)", file=sys.stderr)
+
     # Phase 7: Generate recommendations
     print("Phase 7: Generating action plan...", file=sys.stderr)
     action_plan = generate_recommendations(
@@ -276,6 +323,14 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
         if runtime_events:
             report += "\n\n" + format_runtime_report(correlations, runtime_events)
         report += "\n\n" + format_hardware_report(hardware, model_recs)
+        if flow_latencies:
+            report += "\n\n" + format_latency_report(flow_latencies)
+        if llm_comparisons:
+            report += "\n\n" + format_llm_latency_report(llm_comparisons)
+        if routing_table:
+            report += "\n\n" + format_routing_table(routing_table, hardware)
+        if all_optimizations:
+            report += "\n\n" + format_codegen_report(all_optimizations)
 
     # Record score history
     try:
