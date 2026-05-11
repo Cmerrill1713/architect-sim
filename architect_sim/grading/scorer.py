@@ -101,9 +101,14 @@ def score_system(blueprints: dict, findings: list, flow_traces: list, config) ->
             ep = f.endpoint.lower() if f.endpoint else ""
             if any(ep.startswith(p) or ep.endswith(p) for p in infra_patterns):
                 infra_orphans += 1
-            # Also count daemon/admin/ops endpoints as infrastructure
-            if any(x in ep for x in ['/daemon/', '/ops/', '/admin/', '/api/self',
-                                      '/training', '/api/build', '/api/skills']):
+            # Daemon/admin/ops/internal endpoints are user/ops-facing, not dead code
+            elif any(x in ep for x in ['/daemon/', '/ops/', '/admin/', '/api/self',
+                                        '/training', '/api/build', '/api/skills',
+                                        '/v1/', '/chat/', '/cache/', '/audit',
+                                        '/goals', '/self-', '/prompt', '/evolution',
+                                        '/learning', '/research', '/knowledge',
+                                        '/episodes', '/facts', '/patterns',
+                                        '/incidents', '/resources', '/services']):
                 infra_orphans += 1
     orphan_count = max(0, type_counts.get("orphan_endpoint", 0) - infra_orphans)
     reachable = total_endpoints - orphan_count
