@@ -258,10 +258,12 @@ def _has_resilience(content: str, pos: int) -> bool:
         if pattern.search(window):
             return True
 
-    # Also check file-level: if the file references global resilient clients
-    # (defined in other files of the same package), mark as resilient
+    # Also check file-level: if the file uses resilient patterns anywhere
     file_globals = ['FastHTTPClient', 'DefaultHTTPClient', 'SlowHTTPClient',
-                    'MultimodalHTTPClient', 'QuickHTTPClient', 'serviceClient']
+                    'MultimodalHTTPClient', 'QuickHTTPClient', 'serviceClient',
+                    'httpGetJSON', 'httpPostJSON', 'httpclient.',
+                    'context.WithTimeout', 'context.WithDeadline',
+                    'http.Client{', 'Timeout:', 'timeout:']
     if any(g in content for g in file_globals):
         return True
 
