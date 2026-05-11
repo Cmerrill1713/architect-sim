@@ -104,6 +104,20 @@ def extract_rust_routes(service_name: str, port: int, source_dir: str) -> list:
     return endpoints
 
 
+RUST_RESILIENCE_PATTERNS = [
+    'timeout', 'Timeout', '.timeout(',
+    'retry', 'Retry', 'max_retries',
+    'circuit_breaker', 'CircuitBreaker',
+    'backoff', 'exponential_backoff',
+    'reqwest::ClientBuilder', '.connect_timeout(',
+]
+
+
+def _has_rust_resilience(content: str, pos: int) -> bool:
+    window = content[max(0, pos - 1000):pos + 1000]
+    return any(p in window for p in RUST_RESILIENCE_PATTERNS)
+
+
 def extract_rust_calls(service_name: str, source_dir: str, config) -> list:
     """Extract outbound HTTP calls from Rust source files.
 
@@ -135,7 +149,7 @@ def extract_rust_calls(service_name: str, source_dir: str, config) -> list:
 
             method = _detect_rust_method(content, match.start())
 
-            calls.append(Call(
+            call = Call(
                 caller_service=service_name,
                 callee_service=config.resolve_port(port),
                 callee_port=port,
@@ -144,7 +158,10 @@ def extract_rust_calls(service_name: str, source_dir: str, config) -> list:
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method="hardcoded",
-            ))
+            )
+            if _has_rust_resilience(content, match.start()):
+                call.retry_config = {"type": "timeout_or_retry"}
+            calls.append(call)
 
         # Client method calls
         for match in RUST_CLIENT_RE.finditer(content):
@@ -162,7 +179,7 @@ def extract_rust_calls(service_name: str, source_dir: str, config) -> list:
                 if port == own_port:
                     continue
 
-                calls.append(Call(
+                call = Call(
                     caller_service=service_name,
                     callee_service=config.resolve_port(port),
                     callee_port=port,
@@ -171,7 +188,10 @@ def extract_rust_calls(service_name: str, source_dir: str, config) -> list:
                     file_path=file_str,
                     line_number=line_num,
                     resolution_method="hardcoded",
-                ))
+                )
+                if _has_rust_resilience(content, match.start()):
+                    call.retry_config = {"type": "timeout_or_retry"}
+                calls.append(call)
 
     return calls
 

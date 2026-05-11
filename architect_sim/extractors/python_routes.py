@@ -113,6 +113,23 @@ def extract_python_routes(service_name: str, port: int, source_dir: str) -> list
     return endpoints
 
 
+# Python resilience patterns
+PY_RESILIENCE_PATTERNS = [
+    'timeout=', 'timeout:', 'Timeout(',
+    'retry', 'retries', '@retry', 'tenacity', 'backoff',
+    'circuit_breaker', 'CircuitBreaker',
+    'max_retries', 'max_attempts',
+    'aiohttp.ClientTimeout', 'httpx.Timeout',
+    'requests.adapters.HTTPAdapter', 'urllib3.util.retry',
+]
+
+
+def _has_python_resilience(content: str, pos: int) -> bool:
+    """Check if nearby code has resilience patterns."""
+    window = content[max(0, pos - 1000):pos + 1000]
+    return any(p in window for p in PY_RESILIENCE_PATTERNS)
+
+
 def extract_python_calls(service_name: str, source_dir: str, config) -> list:
     """Extract outbound HTTP calls from Python source files.
 
@@ -144,7 +161,7 @@ def extract_python_calls(service_name: str, source_dir: str, config) -> list:
 
             method = _detect_python_method(content, match.start())
 
-            calls.append(Call(
+            call = Call(
                 caller_service=service_name,
                 callee_service=config.resolve_port(port),
                 callee_port=port,
@@ -153,7 +170,10 @@ def extract_python_calls(service_name: str, source_dir: str, config) -> list:
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method="hardcoded",
-            ))
+            )
+            if _has_python_resilience(content, match.start()):
+                call.retry_config = {"type": "timeout_or_retry"}
+            calls.append(call)
 
         # requests/httpx calls with URLs
         for match in PY_REQUEST_RE.finditer(content):
@@ -172,7 +192,7 @@ def extract_python_calls(service_name: str, source_dir: str, config) -> list:
                 if port == own_port:
                     continue
 
-                calls.append(Call(
+                call = Call(
                     caller_service=service_name,
                     callee_service=config.resolve_port(port),
                     callee_port=port,
@@ -181,7 +201,10 @@ def extract_python_calls(service_name: str, source_dir: str, config) -> list:
                     file_path=file_str,
                     line_number=line_num,
                     resolution_method="hardcoded",
-                ))
+                )
+                if _has_python_resilience(content, match.start()):
+                    call.retry_config = {"type": "timeout_or_retry"}
+                calls.append(call)
 
     return calls
 
