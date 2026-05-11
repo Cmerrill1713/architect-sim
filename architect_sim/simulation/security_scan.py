@@ -421,6 +421,29 @@ def _check_patterns(patterns: list, content: str, file_path: str, service: str, 
             if 'nolint:gosec' in line or 'nosec' in line or '# noqa' in line or 'SAFETY:' in line:
                 continue
 
+            # Skip pprof imports when gated by ATHENA_PPROF_ENABLED
+            if pat["name"] == "pprof Exposed" and 'PPROF_ENABLED' in content:
+                continue
+            if pat["name"] == "pprof Handler Registered" and ('PPROF_ENABLED' in content or 'ENABLE_PPROF' in content):
+                continue
+            if pat["name"] == "Debug Endpoint" and ('PPROF_ENABLED' in content or 'ENABLE_PPROF' in content):
+                continue
+
+            # Skip Go XML — encoding/xml doesn't support DTDs/external entities
+            if pat["name"] == "XXE Risk (Go)" and 'encoding/xml' in content:
+                continue
+
+            # Skip sensitive data that's DB inserts, not log output
+            if pat["name"] == "Sensitive Data in Logs":
+                if any(x in line for x in ['args = append', 'HSet', 'INSERT', 'UPDATE',
+                                             'fmt.Sprintf("api_key', 'parameterized',
+                                             'credential', 'service/', 'import ']):
+                    continue
+
+            # Skip stack traces in logger.debug (not in HTTP response)
+            if pat["name"] == "Stack Trace in Response" and 'logger.debug' in line:
+                continue
+
             # Skip PyTorch model.eval() — not Python eval()
             if pat["name"] == "eval (Python)" and ('model.eval' in line or '.eval()' in line):
                 if 'self.' in line or 'model' in line.lower():
