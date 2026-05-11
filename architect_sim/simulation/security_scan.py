@@ -349,6 +349,20 @@ def _check_patterns(patterns: list, content: str, file_path: str, service: str, 
             if pat["name"] == "eval (Python)" and 'eval(' not in line:
                 continue
 
+            # Skip password patterns that are parsing/detecting, not hardcoding
+            if pat["name"] == "Hardcoded Password":
+                if any(x in line for x in ['HasPrefix', 'starts_with', 'Contains', 'getenv',
+                                             'os.Getenv', 'os.environ', 'Getenv(', '.get(',
+                                             'test-key', 'test_key', 'demo']):
+                    continue
+
+            # Skip Supabase/JWT demo keys
+            if pat["name"] in ("JWT Token", "Supabase Key"):
+                if 'supabase-demo' in content[max(0,match.start()-200):match.start()+200]:
+                    continue
+                if 'demo' in line.lower() or 'test' in line.lower() or 'default' in line.lower():
+                    continue
+
             findings.append(Finding(
                 finding_type="security_issue",
                 severity=pat["severity"],

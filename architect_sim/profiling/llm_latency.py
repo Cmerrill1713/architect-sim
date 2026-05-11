@@ -449,10 +449,35 @@ def compare_models_for_task(
                     current_estimate = est
                 break  # best quant that fits
 
-    # Sort by total latency (fastest first).
-    estimates.sort(key=lambda e: e.total_ms)
+    # Sort by quality-aware ranking: largest model that meets latency SLA.
+    # Larger models produce better output quality. The goal is NOT the fastest
+    # model — it's the best model that's fast enough for the task.
+    #
+    # Latency SLAs by task type (ms):
+    LATENCY_SLA = {
+        "classification": 2000,   # Fast — user waits for routing decision
+        "routing": 1000,          # Very fast — inline with request
+        "extraction": 5000,       # Moderate — can batch
+        "generation": 15000,      # Slow OK — user expects wait
+        "planning": 30000,        # Slow OK — background task
+        "code": 30000,            # Slow OK — background task
+    }
+    sla_ms = LATENCY_SLA.get(task_type, 10000)
 
-    recommended = estimates[0].model_name if estimates else ""
+    # Filter to models that meet the SLA, then sort by size (largest first = best quality)
+    within_sla = [e for e in estimates if e.total_ms <= sla_ms]
+    if within_sla:
+        within_sla.sort(key=lambda e: e.active_params_b, reverse=True)
+        recommended = within_sla[0].model_name
+    elif estimates:
+        # Nothing meets SLA — pick the fastest anyway
+        estimates.sort(key=lambda e: e.total_ms)
+        recommended = estimates[0].model_name
+    else:
+        recommended = ""
+
+    # Sort all estimates by size (largest first) for display
+    estimates.sort(key=lambda e: e.active_params_b, reverse=True)
     speedup = 1.0
     if current_estimate and estimates:
         speedup = current_estimate.total_ms / estimates[0].total_ms if estimates[0].total_ms > 0 else 1.0
@@ -499,7 +524,15 @@ def build_routing_table(
             }
             continue
 
-        best = comp.estimates[0]
+        # Find the recommended model (quality-aware, not just fastest)
+        best = None
+        for est in comp.estimates:
+            if est.model_name == comp.recommended:
+                best = est
+                break
+        if best is None:
+            best = comp.estimates[0]
+
         table[comp.task_type] = {
             "model": best.model_name,
             "quantization": best.quantization,

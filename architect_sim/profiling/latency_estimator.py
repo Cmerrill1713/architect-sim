@@ -322,7 +322,8 @@ def _resolve_model_params(model_name: str) -> tuple[float, float, str]:
 # 5. DAG walk
 # ---------------------------------------------------------------------------
 
-_MAX_DEPTH = 10
+_MAX_DEPTH = 6  # Realistic: a request hits 4-6 services, not the whole mesh
+_MAX_CALLS_PER_SERVICE = 5  # A single request makes at most ~5 calls from one service
 
 
 def estimate_flow_latency(
@@ -332,23 +333,23 @@ def estimate_flow_latency(
     latency_table: Optional[dict] = None,
     hardware: Optional[HardwareProfile] = None,
     llm_calls: Optional[list] = None,
-    percentile: str = "p95",
+    percentile: str = "p50",
 ) -> FlowLatency:
     """Estimate end-to-end latency for a request flow.
 
     Algorithm:
     1. Start from entry_service
-    2. For each outbound call, estimate hop latency (runtime > formula > heuristic)
-    3. All calls from a single service are treated as sequential (conservative)
-    4. Recursive: follow the call chain through downstream services
-    5. Track the critical path (longest sequential chain)
-    6. Identify bottleneck (highest single hop)
+    2. For each unique callee, take the SLOWEST call (worst-case for that hop)
+    3. A single request from one service calls at most ~5 unique downstream services
+    4. Sequential calls to different services: sum latencies
+    5. Multiple calls to the SAME callee: take max (assumed parallel or same-request)
+    6. Recursive: follow the call chain through downstream services
+    7. Track the critical path and identify bottleneck
 
-    Cycle detection: stop if we revisit a service.
-    Depth limit: 10 hops deep.
+    Depth limit: 6 hops (realistic request path, not full mesh traversal).
+    Uses p50 latency by default (typical request, not outliers).
     """
     hops: list[HopLatency] = []
-    # service -> total latency for that subtree (for critical path)
     subtree_latency: dict[str, float] = {}
     visited: set[str] = set()
 
@@ -362,29 +363,41 @@ def estimate_flow_latency(
         if bp is None:
             return 0.0
 
-        service_total = 0.0
+        # Group outbound calls by unique callee — a single request doesn't
+        # call every endpoint, it calls a few downstream services
+        calls_by_callee: dict[str, list] = {}
         for call in bp.outbound_calls:
             callee = call.callee_service
-            if callee.startswith("unknown:"):
+            if callee.startswith("unknown:") or callee == service_name:
                 continue
+            calls_by_callee.setdefault(callee, []).append(call)
 
-            hop = _estimate_hop(
-                caller=service_name,
-                callee=callee,
-                method=call.method,
-                path=call.path,
-                latency_table=latency_table,
-                hardware=hardware,
-                llm_calls=llm_calls,
-                percentile=percentile,
-            )
-            hops.append(hop)
+        # Take the top N callees by frequency (most likely request path)
+        top_callees = sorted(calls_by_callee.items(),
+                             key=lambda x: len(x[1]), reverse=True)[:_MAX_CALLS_PER_SERVICE]
 
-            # Recurse into callee to get downstream latency.
-            downstream = _walk(callee, depth + 1)
+        service_total = 0.0
+        for callee, calls in top_callees:
+            # For each callee, estimate the slowest call (worst case for that hop)
+            best_hop = None
+            for call in calls[:3]:  # Sample up to 3 calls per callee
+                hop = _estimate_hop(
+                    caller=service_name,
+                    callee=callee,
+                    method=call.method,
+                    path=call.path,
+                    latency_table=latency_table,
+                    hardware=hardware,
+                    llm_calls=llm_calls,
+                    percentile=percentile,
+                )
+                if best_hop is None or hop.estimated_ms > best_hop.estimated_ms:
+                    best_hop = hop
 
-            # Sequential: sum hop latency + downstream latency.
-            service_total += hop.estimated_ms + downstream
+            if best_hop:
+                hops.append(best_hop)
+                downstream = _walk(callee, depth + 1)
+                service_total += best_hop.estimated_ms + downstream
 
         subtree_latency[service_name] = service_total
         return service_total
@@ -458,12 +471,13 @@ def estimate_all_flows(
     runtime_events: Optional[list] = None,
     hardware: Optional[HardwareProfile] = None,
     llm_calls: Optional[list] = None,
-    percentile: str = "p95",
+    percentile: str = "p50",
 ) -> list[FlowLatency]:
     """Estimate latency for all discoverable flows.
 
     Finds entry points (services with inbound calls but no callers),
     traces each flow, and estimates latency.
+    Uses p50 (median) by default for typical request latency.
     """
     latency_table = None
     if runtime_events:

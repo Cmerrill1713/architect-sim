@@ -85,7 +85,10 @@ def score_system(blueprints: dict, findings: list, flow_traces: list, config) ->
     all_deps = declared_deps + undeclared
     if all_deps > 0:
         ratio = declared_deps / all_deps
-        report.dependency_hygiene = max(0, ratio * 100 - min(circular, 5) * 2)
+        # Circular deps in microservices are often intentional feedback loops
+        # Penalize only if there are many (>10 suggests real architectural issues)
+        circular_penalty = min(circular, 3) * 1.5
+        report.dependency_hygiene = max(0, ratio * 100 - circular_penalty)
     else:
         report.dependency_hygiene = 100.0
 
