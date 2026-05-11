@@ -48,6 +48,22 @@ def main():
         "--output-dir",
         help="Directory for output files and ledger",
     )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply fixes to disk (default: dry run analysis only)",
+    )
+    parser.add_argument(
+        "--auto-commit",
+        action="store_true",
+        help="Commit applied changes automatically",
+    )
+    parser.add_argument(
+        "--apply-severity",
+        choices=["critical", "warning", "info"],
+        default="warning",
+        help="Only apply fixes at or above this severity (default: warning)",
+    )
     args = parser.parse_args()
 
     config = Config(
@@ -60,7 +76,14 @@ def main():
         grade, findings, traces, blueprints, report = run_analyze(config, args.format)
         print(report)
     else:
-        report = run_loop(config, args.max_iterations, args.output_dir)
+        report = run_loop(
+            config,
+            args.max_iterations,
+            args.output_dir,
+            apply=args.apply,
+            auto_commit=args.auto_commit,
+            apply_severity=args.apply_severity,
+        )
         print(report)
 
 

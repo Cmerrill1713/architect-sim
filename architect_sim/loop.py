@@ -15,6 +15,7 @@ from .extractors.temporal import (
     find_doc_drift, format_temporal_report,
 )
 from .simulation.contract_checker import check_contracts, check_dependency_drift, check_circular_deps
+from .simulation.schema_checker import check_schemas
 from .simulation.flow_tracer import trace_all_flows
 from .grading.scorer import score_system
 from .extractors.llm_calls import extract_llm_calls_all_languages, format_llm_report
@@ -77,6 +78,9 @@ def simulate_all(blueprints: dict, config: Config) -> tuple:
 
     # Contract checks
     findings.extend(check_contracts(blueprints, config))
+
+    # Schema-level field mismatch checks
+    findings.extend(check_schemas(blueprints, config))
 
     # Dependency drift
     findings.extend(check_dependency_drift(blueprints, config))
@@ -224,11 +228,15 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     # Phase 10: Outcome learning (verify past predictions)
     print("Phase 10: Checking past predictions...", file=sys.stderr)
     tracker = OutcomeTracker(str(config.root))
-    newly_verified = tracker.verify_predictions(grade, findings)
-    if newly_verified:
-        print(f"  Verified {newly_verified} past predictions (avg accuracy: {tracker.learning_state.get('avg_accuracy', 0):.0%})", file=sys.stderr)
-    else:
-        print(f"  No past predictions to verify (first run or no changes since last run)", file=sys.stderr)
+    try:
+        newly_verified = tracker.verify_predictions(grade, findings)
+        if newly_verified:
+            ls = tracker.learning_state if isinstance(tracker.learning_state, dict) else {}
+            print(f"  Verified {newly_verified} past predictions (avg accuracy: {ls.get('avg_accuracy', 0):.0%})", file=sys.stderr)
+        else:
+            print(f"  No past predictions to verify", file=sys.stderr)
+    except Exception as e:
+        print(f"  Outcome tracking skipped: {e}", file=sys.stderr)
 
     # Record current scenario predictions for future verification
     for sr in scenario_results:
@@ -276,10 +284,13 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     return grade, findings, traces, blueprints, report
 
 
-def run_loop(config: Config, max_iterations: int = 50, output_dir: str = None):
+def run_loop(config: Config, max_iterations: int = 50, output_dir: str = None,
+             apply: bool = False, auto_commit: bool = False,
+             apply_severity: str = "warning"):
     """Run the full autonomous simulation loop.
 
     Extract -> Simulate -> Grade -> Diagnose -> Fix -> Re-Grade -> iterate
+    Optionally apply fixes to disk and commit.
     """
     if output_dir is None:
         output_dir = str(config.root / "architect-sim-output")
@@ -323,4 +334,35 @@ def run_loop(config: Config, max_iterations: int = 50, output_dir: str = None):
     if fix_result.needs_user:
         print(f"\n  Needs your decision: {len(fix_result.needs_user)} issues", file=sys.stderr)
 
-    return format_fix_report(fix_result)
+    report = format_fix_report(fix_result)
+
+    # Auto-apply phase: generate patches, apply to disk, verify builds
+    if fix_result.fixes_accepted:
+        from .fixing.auto_apply import auto_apply, format_apply_report
+
+        dry_run = not apply
+        mode = "DRY RUN" if dry_run else "LIVE"
+        print(f"\nPhase 5: Auto-apply ({mode})...", file=sys.stderr)
+
+        apply_result = auto_apply(
+            fix_result.fixes_accepted,
+            blueprints,
+            config,
+            dry_run=dry_run,
+            auto_commit=auto_commit,
+            min_severity=apply_severity,
+        )
+
+        if apply_result.patches_generated > 0:
+            print(f"  Generated: {apply_result.patches_generated} patches", file=sys.stderr)
+            print(f"  Applied: {apply_result.patches_applied}", file=sys.stderr)
+            if apply_result.reverted:
+                print(f"  Reverted: {len(apply_result.reverted)} (build failure)", file=sys.stderr)
+            if apply_result.committed:
+                print(f"  Committed: {apply_result.commit_hash}", file=sys.stderr)
+        else:
+            print(f"  No applicable patches (fixes are config/blueprint-only)", file=sys.stderr)
+
+        report += format_apply_report(apply_result)
+
+    return report
