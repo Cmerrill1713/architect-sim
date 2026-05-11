@@ -25,6 +25,7 @@ from .reporting.markdown_report import generate_report
 from .reporting.json_report import generate_json
 from .reporting.recommendations import generate_recommendations
 from .reporting.ledger import Ledger
+from .research.tech_upgrades import scan_for_technologies, format_tech_report
 
 
 def extract_all(config: Config) -> dict:
@@ -190,11 +191,19 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     rec_count = action_plan.count("### ")
     print(f"  {rec_count} prioritized recommendations", file=sys.stderr)
 
+    # Phase 8: Technology upgrade scan
+    print("Phase 8: Scanning for technology upgrades...", file=sys.stderr)
+    start = time.time()
+    tech_upgrades = scan_for_technologies(str(config.root), blueprints)
+    print(f"  {len(tech_upgrades)} upgrade recommendations ({time.time() - start:.1f}s)", file=sys.stderr)
+
     if output_format == "json":
         report = generate_json(grade, findings, traces, blueprints)
     else:
-        # Action plan goes FIRST — it's the most important output
+        # Action plan + tech upgrades go FIRST
         report = action_plan + "\n\n---\n\n"
+        if tech_upgrades:
+            report += format_tech_report(tech_upgrades) + "\n\n---\n\n"
         report += generate_report(grade, findings, traces, blueprints)
         report += "\n\n" + format_temporal_report(temporal_profiles)
         if all_llm_calls:
