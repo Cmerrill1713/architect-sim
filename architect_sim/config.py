@@ -569,10 +569,15 @@ class Config:
         return False
 
     def get_service_dirs(self) -> dict:
-        """Find all service directories with their language."""
+        """Find all service directories with their language.
+
+        Scans the primary services_dir plus sibling directories that
+        contain source files (catches UI/frontend dirs outside services/).
+        """
         result = {}
         if not self.services_dir or not self.services_dir.exists():
             return result
+
         for d in sorted(self.services_dir.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
                 continue
@@ -581,23 +586,60 @@ class Config:
             lang = self._detect_language(d)
             if lang != "unknown":
                 result[d.name] = {"path": str(d), "language": lang}
+
+        # Scan sibling directories for UI/frontend/app dirs
+        parent = self.services_dir.parent
+        if parent.exists():
+            skip = {"node_modules", "vendor", "dist", "build", "bin", "logs",
+                    "data", "config", "docs", "scripts", "tools", "tests", "test"}
+            for d in sorted(parent.iterdir()):
+                if not d.is_dir() or d.name.startswith("."):
+                    continue
+                if d == self.services_dir or d.name in skip:
+                    continue
+                lang = self._detect_language(d)
+                if lang == "unknown":
+                    continue
+                if d.name in result and result[d.name]["language"] != lang:
+                    result[f"{d.name}-{lang}"] = {"path": str(d), "language": lang}
+                elif d.name not in result:
+                    result[d.name] = {"path": str(d), "language": lang}
+
         return result
 
     def _detect_language(self, d: Path) -> str:
-        """Detect the primary language of a service directory."""
-        # Check in order of specificity
-        if list(d.glob("*.go"))[:1] or list(d.glob("**/*.go"))[:1]:
-            return "go"
-        if list(d.glob("Cargo.toml"))[:1] or list(d.glob("*.rs"))[:1] or list(d.glob("src/**/*.rs"))[:1]:
-            return "rust"
-        if list(d.glob("*.ts"))[:1] or list(d.glob("*.tsx"))[:1] or list(d.glob("src/**/*.ts"))[:1]:
-            return "node"
-        if list(d.glob("tsconfig.json"))[:1] or list(d.glob("package.json"))[:1]:
-            # Has package.json but check for JS files
-            if list(d.glob("*.js"))[:1] or list(d.glob("src/**/*.js"))[:1]:
-                return "node"
-        if list(d.glob("*.py"))[:1] or list(d.glob("**/*.py"))[:1]:
-            return "python"
-        if list(d.glob("*.js"))[:1] or list(d.glob("*.mjs"))[:1]:
-            return "node"
-        return "unknown"
+        """Detect the primary language by counting source files per language."""
+        counts = {"go": 0, "rust": 0, "node": 0, "python": 0}
+
+        for f in d.rglob("*.go"):
+            if "vendor" not in str(f):
+                counts["go"] += 1
+                if counts["go"] > 20:
+                    break
+        if (d / "Cargo.toml").exists():
+            counts["rust"] = 100
+        else:
+            for f in d.rglob("*.rs"):
+                counts["rust"] += 1
+                if counts["rust"] > 20:
+                    break
+        for ext in ("*.ts", "*.tsx", "*.jsx"):
+            for f in d.rglob(ext):
+                if not any(s in str(f) for s in ["node_modules", "/dist/", "/build/", "/.next/"]):
+                    counts["node"] += 1
+                    if counts["node"] > 20:
+                        break
+        for f in d.glob("src/**/*.js"):
+            counts["node"] += 1
+        if (d / "tsconfig.json").exists():
+            counts["node"] += 10
+        elif (d / "package.json").exists() and (d / "src").is_dir():
+            counts["node"] += 5
+        for f in d.rglob("*.py"):
+            if "venv" not in str(f) and "site-packages" not in str(f):
+                counts["python"] += 1
+                if counts["python"] > 20:
+                    break
+
+        best = max(counts, key=counts.get)
+        return best if counts[best] > 0 else "unknown"
