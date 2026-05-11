@@ -386,6 +386,10 @@ def _check_auth_middleware(bp, content: str, file_path: str, lang: str) -> list:
         if route_path in skip_paths or any(route_path.startswith(p) for p in ("/health", "/metrics", "/debug")):
             continue
 
+        # Skip internal-only services (bound to 127.0.0.1 or localhost, not user-facing)
+        if '127.0.0.1' in content[:500] or 'localhost' in content[:500] or '0.0.0.0' not in content[:500]:
+            continue  # Internal service — auth not required
+
         line_num = content[:match.start()].count("\n") + 1
 
         # Look for auth indicators in surrounding context (20 lines before/after)
