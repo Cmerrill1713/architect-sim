@@ -17,6 +17,10 @@ from .extractors.temporal import (
 from .simulation.contract_checker import check_contracts, check_dependency_drift, check_circular_deps
 from .simulation.flow_tracer import trace_all_flows
 from .grading.scorer import score_system
+from .extractors.llm_calls import extract_llm_calls_all_languages, format_llm_report
+from .runtime.log_ingestion import auto_discover_logs, ingest_logs, correlate_with_findings, format_runtime_report
+from .profiling.hardware import detect_hardware, recommend_models, format_hardware_report
+from .scoring.history import ScoreHistory
 from .reporting.markdown_report import generate_report
 from .reporting.json_report import generate_json
 from .reporting.ledger import Ledger
@@ -135,11 +139,62 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     grade = score_system(blueprints, findings, traces, config)
     print(f"  Grade: {grade.grade} ({grade.overall:.1f}/100)", file=sys.stderr)
 
+    # Phase 4: LLM call extraction
+    print("Phase 4: Extracting LLM call sites...", file=sys.stderr)
+    start = time.time()
+    all_llm_calls = []
+    for name, bp in blueprints.items():
+        calls = extract_llm_calls_all_languages(name, bp.source_dir)
+        all_llm_calls.extend(calls)
+    llm_time = time.time() - start
+    task_counts = {}
+    for c in all_llm_calls:
+        task_counts[c.task_type] = task_counts.get(c.task_type, 0) + 1
+    print(f"  {len(all_llm_calls)} LLM call sites across {len(set(c.service_name for c in all_llm_calls))} services ({llm_time:.1f}s)", file=sys.stderr)
+    if task_counts:
+        print(f"  Tasks: {task_counts}", file=sys.stderr)
+
+    # Phase 5: Runtime log analysis
+    print("Phase 5: Analyzing runtime logs...", file=sys.stderr)
+    start = time.time()
+    log_paths = auto_discover_logs(str(config.root))
+    runtime_events = []
+    correlations = []
+    if log_paths:
+        runtime_events = ingest_logs(log_paths, since_hours=24)
+        correlations = correlate_with_findings(runtime_events, findings, config)
+        confirmed = sum(1 for c in correlations if c.severity_boost == "confirmed")
+        print(f"  {len(runtime_events)} events from {len(log_paths)} logs, {confirmed} findings confirmed by runtime ({time.time() - start:.1f}s)", file=sys.stderr)
+    else:
+        print(f"  No log files found ({time.time() - start:.1f}s)", file=sys.stderr)
+
+    # Phase 6: Hardware profiling
+    print("Phase 6: Profiling hardware...", file=sys.stderr)
+    start = time.time()
+    hardware = detect_hardware()
+    model_recs = recommend_models(hardware, task_types=task_counts if task_counts else None)
+    print(f"  {hardware.cpu_model}, {hardware.ram_total_gb:.0f}GB, {len(model_recs)} models fit ({time.time() - start:.1f}s)", file=sys.stderr)
+
     if output_format == "json":
         report = generate_json(grade, findings, traces, blueprints)
     else:
         report = generate_report(grade, findings, traces, blueprints)
         report += "\n\n" + format_temporal_report(temporal_profiles)
+        if all_llm_calls:
+            report += "\n\n" + format_llm_report(all_llm_calls)
+        if runtime_events:
+            report += "\n\n" + format_runtime_report(correlations, runtime_events)
+        report += "\n\n" + format_hardware_report(hardware, model_recs)
+
+    # Record score history
+    try:
+        history = ScoreHistory(str(config.root))
+        history.record(grade, findings, blueprints)
+        trend = history.format_trend()
+        if trend and output_format != "json":
+            report += "\n\n" + trend
+    except Exception:
+        pass  # Score history is best-effort
 
     return grade, findings, traces, blueprints, report
 
