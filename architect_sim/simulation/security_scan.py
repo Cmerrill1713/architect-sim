@@ -42,6 +42,8 @@ SECRET_PATTERNS = [
     {"name": "Supabase Key", "regex": r"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+", "severity": "warning"},
     # Database URLs with credentials
     {"name": "Database URL with Password", "regex": r"(?:postgres|mysql|mongodb|redis)://\w+:[^@\s]{3,}@", "severity": "critical"},
+    # Database URL without SSL (sslmode=disable)
+    {"name": "Database SSL Disabled", "regex": r"(?:postgres|mysql)://.*sslmode=disable", "severity": "warning"},
     # Bearer tokens
     {"name": "Bearer Token", "regex": r"""(?i)bearer\s+[a-zA-Z0-9_\-.]{20,}""", "severity": "warning"},
     # Google
@@ -87,11 +89,10 @@ PATH_TRAVERSAL_PATTERNS = [
     {"name": "Unvalidated Path Join", "regex": r'(?:filepath\.Join|path\.join|os\.path\.join)\(.*\+', "severity": "warning"},
 ]
 
+# CORS patterns — only flag in production configs, not localhost dev setups.
+# Wildcard CORS on localhost is expected for local development.
 CORS_PATTERNS = [
-    {"name": "CORS Allow All Origins", "regex": r'Access-Control-Allow-Origin.*\*', "severity": "warning"},
-    {"name": "CORS Allow All (Go)", "regex": r'(?:AllowAllOrigins|AllowOrigins)\s*[:=]?\s*true', "langs": ["go"], "severity": "warning"},
-    {"name": "CORS Allow All (JS)", "regex": r'cors\(\s*\{?\s*(?:origin\s*:\s*(?:true|\*|["\']\\*["\']))', "langs": ["node"], "severity": "warning"},
-    {"name": "CORS Wildcard Header", "regex": r'Access-Control-Allow-Headers.*\*', "severity": "warning"},
+    {"name": "CORS Allow All (Production)", "regex": r'(?:production|prod|deploy).*Access-Control-Allow-Origin.*\*', "severity": "warning"},
 ]
 
 INSECURE_HTTP_PATTERNS = [
@@ -100,6 +101,41 @@ INSECURE_HTTP_PATTERNS = [
     {"name": "TLS Verify Disabled (Python)", "regex": r'verify\s*=\s*False', "langs": ["python"], "severity": "warning"},
     {"name": "TLS Reject Unauthorized (JS)", "regex": r'rejectUnauthorized\s*:\s*false', "langs": ["node"], "severity": "critical"},
     {"name": "Weak TLS Version", "regex": r'(?:TLSv1\.0|TLSv1\.1|SSLv3|MinVersion.*tls\.VersionTLS10)', "severity": "warning"},
+]
+
+# Debug/admin exposure
+DEBUG_EXPOSURE_PATTERNS = [
+    {"name": "pprof Exposed", "regex": r'[_ ]"net/http/pprof"', "langs": ["go"], "severity": "warning"},
+    {"name": "pprof Handler Registered", "regex": r'pprof\.Handler|/debug/pprof|ListenAndServe.*pprof', "severity": "warning"},
+    {"name": "Debug Mode Enabled", "regex": r'(?i)(?:debug|DEBUG)\s*[:=]\s*(?:true|True|1|"true")', "severity": "warning"},
+    {"name": "Debug Endpoint", "regex": r'(?:HandleFunc|GET|POST)\(\s*["\'](?:/debug/|/admin/|/__)', "severity": "warning"},
+    {"name": "Stack Trace in Response", "regex": r'(?:stacktrace|stack_trace|traceback)\s*[:=]', "severity": "warning"},
+]
+
+# Input validation / sanitization gaps
+INPUT_VALIDATION_PATTERNS = [
+    # Deserialization without validation
+    {"name": "Unsafe Deserialization (Python)", "regex": r'pickle\.loads?\(|yaml\.load\(\s*[^,]+(?:,\s*Loader\s*=\s*yaml\.(?:Unsafe|Full)Loader)?(?:\s*\))', "langs": ["python"], "severity": "critical"},
+    {"name": "Unsafe Deserialization (Go)", "regex": r'json\.Unmarshal\([^,]+,\s*&?interface\{\}', "langs": ["go"], "severity": "warning"},
+    # Template injection
+    {"name": "Template Injection (Python)", "regex": r'\.render_template_string\(|Template\(\s*(?:request|params|args)', "langs": ["python"], "severity": "critical"},
+    {"name": "Template Injection (JS)", "regex": r'(?:ejs|pug|jade)\.render\(.*(?:req\.|params|body)', "langs": ["node"], "severity": "critical"},
+    # Header injection
+    {"name": "Header Injection", "regex": r'(?:setHeader|set_header|Header\.Set)\(.*(?:req\.|request\.|params)', "severity": "warning"},
+    # Open redirect
+    {"name": "Open Redirect", "regex": r'(?:redirect|Redirect|302)\(.*(?:req\.|request\.|params\[|c\.Query)', "severity": "warning"},
+    # Log injection (sensitive data in logs)
+    {"name": "Sensitive Data in Logs", "regex": r'(?i)(?:log|print|fmt\.Print|console\.log).*(?:password\s*[:=]|secret\s*[:=]|api.?key\s*[:=]|credential\s*[:=]|bearer\s+\w{20})', "severity": "warning"},
+    # XML external entity
+    {"name": "XXE Risk (Go)", "regex": r'xml\.NewDecoder\(', "langs": ["go"], "severity": "warning"},
+    {"name": "XXE Risk (Python)", "regex": r'etree\.parse\(|xml\.dom\.minidom\.parse\(', "langs": ["python"], "severity": "warning"},
+]
+
+# Rate limiting / DoS protection
+RATE_LIMIT_PATTERNS = [
+    # Endpoints that accept POST without visible rate limiting
+    # (heuristic — flag services that have POST endpoints but no rate limiter import)
+    {"name": "Missing Rate Limiter (Go)", "regex": r'func main\(\)', "severity": "info", "meta": "check_rate_limit"},
 ]
 
 # Auth middleware indicators — used for heuristic "missing auth" detection
@@ -119,6 +155,8 @@ _ALL_PATTERN_SETS = [
     PATH_TRAVERSAL_PATTERNS,
     CORS_PATTERNS,
     INSECURE_HTTP_PATTERNS,
+    DEBUG_EXPOSURE_PATTERNS,
+    INPUT_VALIDATION_PATTERNS,
 ]
 
 # =============================================================================
@@ -216,6 +254,24 @@ _FIX_SUGGESTIONS = {
     "Weak TLS Version": "Set minimum TLS version to 1.2 (tls.VersionTLS12)",
     # Auth
     "Missing Auth Middleware": "Add authentication middleware (JWT, session, API key) to protect this route",
+    # Database
+    "Database SSL Disabled": "Enable SSL: use sslmode=require or sslmode=verify-full in connection string",
+    # Debug exposure
+    "pprof Exposed": "Guard pprof behind auth or bind to localhost-only in production",
+    "pprof Handler Registered": "Ensure /debug/pprof is behind authentication or localhost-only",
+    "Debug Mode Enabled": "Disable debug mode in production; use build tags or env var checks",
+    "Debug Endpoint": "Remove or protect debug/admin endpoints behind authentication",
+    "Stack Trace in Response": "Don't expose stack traces to clients; log them server-side only",
+    # Input validation
+    "Unsafe Deserialization (Python)": "Use yaml.safe_load() instead of yaml.load(); avoid pickle on untrusted data",
+    "Unsafe Deserialization (Go)": "Unmarshal into typed structs, not interface{}; validate after deserialization",
+    "Template Injection (Python)": "Never pass user input to render_template_string(); use render_template() with files",
+    "Template Injection (JS)": "Never pass user input directly to template engines; sanitize first",
+    "Header Injection": "Validate and sanitize header values; reject values containing newlines",
+    "Open Redirect": "Validate redirect URLs against a whitelist of allowed destinations",
+    "Sensitive Data in Logs": "Never log passwords, tokens, or secrets; mask sensitive fields before logging",
+    "XXE Risk (Go)": "Disable external entity processing in XML parser",
+    "XXE Risk (Python)": "Use defusedxml instead of xml.etree for untrusted XML input",
 }
 
 
@@ -374,7 +430,8 @@ def _check_patterns(patterns: list, content: str, file_path: str, service: str, 
                 details=f"[{pat['name']}] {line.strip()[:80]}",
                 suggested_fix=_get_fix_suggestion(pat["name"]),
             ))
-            break  # One finding per pattern per file (avoid spam)
+            if len([f for f in findings if f.endpoint == pat["name"]]) >= 3:
+                break  # Cap at 3 per pattern per file
 
     return findings
 
