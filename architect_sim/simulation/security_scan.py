@@ -89,7 +89,7 @@ PATH_TRAVERSAL_PATTERNS = [
 
 CORS_PATTERNS = [
     {"name": "CORS Allow All Origins", "regex": r'Access-Control-Allow-Origin.*\*', "severity": "warning"},
-    {"name": "CORS Allow All (Go)", "regex": r'(?:AllowAllOrigins|AllowOrigins).*true|\*', "langs": ["go"], "severity": "warning"},
+    {"name": "CORS Allow All (Go)", "regex": r'(?:AllowAllOrigins|AllowOrigins)\s*[:=]?\s*true', "langs": ["go"], "severity": "warning"},
     {"name": "CORS Allow All (JS)", "regex": r'cors\(\s*\{?\s*(?:origin\s*:\s*(?:true|\*|["\']\\*["\']))', "langs": ["node"], "severity": "warning"},
     {"name": "CORS Wildcard Header", "regex": r'Access-Control-Allow-Headers.*\*', "severity": "warning"},
 ]
