@@ -94,9 +94,15 @@ def score_system(blueprints: dict, findings: list, flow_traces: list, config) ->
     reachable = total_endpoints - orphan_count
     report.coverage = (reachable / max(total_endpoints, 1)) * 100
 
-    # 6. Security
+    # 6. Security — normalize by total source files scanned
     security_findings = type_counts.get("security_issue", 0)
-    report.security = max(0, 100 - (security_findings * 15))
+    total_files = max(total_endpoints, 1)  # proxy for codebase size
+    # Critical findings penalize more than warnings
+    critical_sec = sum(1 for f in findings if f.finding_type == "security_issue" and f.severity == "critical")
+    warning_sec = security_findings - critical_sec
+    # Score: 100 - (critical * 5% + warning * 1%), floored at 10 if any files scanned
+    penalty = (critical_sec * 5) + (warning_sec * 1)
+    report.security = max(10 if total_files > 10 else 0, 100 - penalty)
 
     # Overall score (weighted average)
     report.overall = (

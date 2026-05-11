@@ -17,6 +17,7 @@ from .extractors.temporal import (
 )
 from .simulation.contract_checker import check_contracts, check_dependency_drift, check_circular_deps
 from .simulation.schema_checker import check_schemas
+from .simulation.security_scan import check_security
 from .simulation.flow_tracer import trace_all_flows
 from .grading.scorer import score_system
 from .extractors.llm_calls import extract_llm_calls_all_languages, format_llm_report
@@ -91,6 +92,9 @@ def simulate_all(blueprints: dict, config: Config) -> tuple:
 
     # Circular dependencies
     findings.extend(check_circular_deps(blueprints))
+
+    # Security scan
+    findings.extend(check_security(blueprints, config))
 
     # Auto-discovered flow traces
     traces, flow_findings = trace_all_flows(blueprints, config)
