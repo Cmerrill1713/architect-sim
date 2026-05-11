@@ -32,6 +32,7 @@ from .reporting.json_report import generate_json
 from .reporting.recommendations import generate_recommendations
 from .reporting.ledger import Ledger
 from .research.tech_upgrades import scan_for_technologies, format_tech_report
+from .reporting.strategic_assessment import generate_strategic_assessment
 from .simulator.scenario_engine import run_all_presets, format_scenario_report
 from .simulator.outcome_tracker import OutcomeTracker
 
@@ -307,11 +308,25 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
                 probability=getattr(sr, 'probability_success', 0.5),
             )
 
+    # Phase 11: Strategic architecture assessment
+    print("Phase 11: Generating strategic assessment...", file=sys.stderr)
+    start = time.time()
+    strategic = generate_strategic_assessment(
+        blueprints, findings, grade, config,
+        temporal_profiles=temporal_profiles,
+        llm_calls=all_llm_calls,
+        hardware=hardware,
+        scenario_results=scenario_results,
+        flow_latencies=flow_latencies if 'flow_latencies' in dir() else None,
+    )
+    print(f"  Done ({time.time() - start:.1f}s)", file=sys.stderr)
+
     if output_format == "json":
         report = generate_json(grade, findings, traces, blueprints)
     else:
-        # Action plan + scenarios + tech upgrades go FIRST
-        report = action_plan + "\n\n---\n\n"
+        # Strategic assessment goes FIRST — it's the forest view
+        report = strategic + "\n\n---\n\n"
+        report += action_plan + "\n\n---\n\n"
         if scenario_results:
             report += format_scenario_report(scenario_results) + "\n\n---\n\n"
         if tech_upgrades:
