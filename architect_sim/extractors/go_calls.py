@@ -247,6 +247,7 @@ def _has_resilience(content: str, pos: int) -> bool:
     Detects: FastHTTPClient, DefaultHTTPClient, http.Client with Timeout,
     circuit breakers, retry/attempt loops.
     """
+    # Check nearby (1500 chars before, 500 after)
     window_start = max(0, pos - 1500)
     window_end = min(len(content), pos + 500)
     window = content[window_start:window_end]
@@ -254,4 +255,12 @@ def _has_resilience(content: str, pos: int) -> bool:
     for pattern in RESILIENCE_PATTERNS:
         if pattern.search(window):
             return True
+
+    # Also check file-level: if the file references global resilient clients
+    # (defined in other files of the same package), mark as resilient
+    file_globals = ['FastHTTPClient', 'DefaultHTTPClient', 'SlowHTTPClient',
+                    'MultimodalHTTPClient', 'QuickHTTPClient', 'serviceClient']
+    if any(g in content for g in file_globals):
+        return True
+
     return False
