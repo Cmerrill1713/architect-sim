@@ -48,10 +48,12 @@ RETRY_WRAPPER_RE = re.compile(
 
 # Resilience patterns: circuit breakers, resilient HTTP clients, retries
 RESILIENCE_PATTERNS = [
-    re.compile(r'FastHTTPClient|DefaultHTTPClient', re.MULTILINE),
+    re.compile(r'FastHTTPClient|DefaultHTTPClient|SlowHTTPClient|MultimodalHTTPClient|QuickHTTPClient', re.MULTILINE),
     re.compile(r'http\.Client\s*\{[^}]*Timeout\s*:', re.MULTILINE | re.DOTALL),
     re.compile(r'circuitbreaker|circuit_breaker|CircuitBreaker', re.MULTILINE),
     re.compile(r'\bretry\b|\battempt\b', re.MULTILINE),
+    re.compile(r'httpGetJSON|httpPostJSON|httpGetWithContext|httpclient\.', re.MULTILINE),
+    re.compile(r'WithTimeout|context\.WithTimeout|context\.WithDeadline', re.MULTILINE),
 ]
 
 
