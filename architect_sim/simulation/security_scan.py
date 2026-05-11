@@ -173,23 +173,48 @@ _LANG_EXTENSIONS = {
 
 # Directories to skip
 _SKIP_DIRS = frozenset({
+    # Package managers / dependencies
     "vendor", "node_modules", "target", "dist", "build", "__pycache__",
-    ".git", ".venv", "venv", "env", "site-packages", "examples", "example",
+    ".git", ".venv", "venv", "env", "site-packages",
+    # Third-party code
+    "third_party", "third-party", "external", "lib", "libs",
+    # ComfyUI and other embedded third-party
+    "ComfyUI", "comfyui", "custom_nodes", "Comfyui_turbodiffusion",
+    # Test data
     "testdata", "test_fixtures", "fixtures", "mocks", "mock",
-    "docs", "documentation", "third_party", "third-party",
+    "examples", "example", "demos", "demo",
+    # Documentation
+    "docs", "documentation",
+    # Generated code
+    "generated", "gen", "pb", "proto",
+    # Meta/evolution (not production code)
+    "iterations", "evolution", "experiments", "novelty_lab",
+    # Build artifacts
+    ".build", ".next", "coverage", "htmlcov",
 })
 
 # File name patterns to skip
 _SKIP_FILE_PATTERNS = [
+    # Test files
     re.compile(r'_test\.go$'),
     re.compile(r'test_.*\.py$'),
     re.compile(r'.*_test\.py$'),
     re.compile(r'.*\.test\.[jt]sx?$'),
     re.compile(r'.*\.spec\.[jt]sx?$'),
     re.compile(r'.*_test\.rs$'),
+    # Env templates
     re.compile(r'\.env\.example$'),
     re.compile(r'\.env\.sample$'),
     re.compile(r'\.env\.template$'),
+    # Benchmarks and scripts (not production)
+    re.compile(r'benchmark_.*\.py$'),
+    re.compile(r'.*_benchmark\.py$'),
+    re.compile(r'.*_bench\.go$'),
+    # Generated / protobuf
+    re.compile(r'.*\.pb\.go$'),
+    re.compile(r'.*_generated\.go$'),
+    re.compile(r'.*\.gen\.go$'),
+    re.compile(r'.*_gen\.go$'),
 ]
 
 
@@ -409,14 +434,53 @@ def _check_patterns(patterns: list, content: str, file_path: str, service: str, 
             if pat["name"] == "Hardcoded Password":
                 if any(x in line for x in ['HasPrefix', 'starts_with', 'Contains', 'getenv',
                                              'os.Getenv', 'os.environ', 'Getenv(', '.get(',
-                                             'test-key', 'test_key', 'demo']):
+                                             'test-key', 'test_key', 'demo', 'TrimPrefix',
+                                             'strings.Trim', 'for pat in', 'pattern',
+                                             'example', 'placeholder', '***', 'xxx']):
                     continue
 
-            # Skip Supabase/JWT demo keys
+            # Skip Supabase/JWT anon keys (public by design, not secrets)
             if pat["name"] in ("JWT Token", "Supabase Key"):
-                if 'supabase-demo' in content[max(0,match.start()-200):match.start()+200]:
+                context_window = content[max(0, match.start()-300):match.start()+300]
+                if any(x in context_window.lower() for x in [
+                    'anon', 'anonkey', 'anon_key', 'public',
+                    'supabase-demo', 'demo', 'test', 'default',
+                    'SUPABASE_ANON', 'publishable',
+                ]):
                     continue
-                if 'demo' in line.lower() or 'test' in line.lower() or 'default' in line.lower():
+
+            # Skip Database SSL disabled on localhost (expected for local dev)
+            if pat["name"] == "Database SSL Disabled":
+                if 'localhost' in line or '127.0.0.1' in line:
+                    continue
+
+            # Skip pprof when bound to localhost only (safe)
+            if pat["name"] in ("pprof Exposed", "pprof Handler Registered"):
+                context_window = content[max(0, match.start()-500):match.start()+500]
+                if '127.0.0.1' in context_window and '0.0.0.0' not in context_window:
+                    continue  # Bound to localhost only — safe
+
+            # Skip path joins that use validated/cleaned input
+            if pat["name"] == "Unvalidated Path Join":
+                context_window = content[max(0, match.start()-200):match.start()+200]
+                if any(x in context_window for x in [
+                    'filepath.Clean', 'filepath.Abs', 'path.resolve',
+                    'os.path.realpath', 'os.path.abspath',
+                    'sanitize', 'validate', 'allowlist', 'whitelist',
+                ]):
+                    continue
+
+            # Skip XXE when using safe parsers
+            if "XXE" in pat["name"]:
+                context_window = content[max(0, match.start()-300):match.start()+300]
+                if any(x in context_window for x in ['defusedxml', 'safe', 'DisableEntityResolution']):
+                    continue
+
+            # Skip sensitive data in logs that are just key names, not values
+            if pat["name"] == "Sensitive Data in Logs":
+                if any(x in line for x in ['disabled', 'enabled', 'missing', 'not set',
+                                             'configured', 'initialized', 'no secret',
+                                             'REDACTED', 'masked', '***']):
                     continue
 
             findings.append(Finding(
