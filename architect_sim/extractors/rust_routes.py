@@ -114,8 +114,12 @@ RUST_RESILIENCE_PATTERNS = [
 
 
 def _has_rust_resilience(content: str, pos: int) -> bool:
+    # Check nearby for call-level patterns
     window = content[max(0, pos - 1000):pos + 1000]
-    return any(p in window for p in RUST_RESILIENCE_PATTERNS)
+    if any(p in window for p in RUST_RESILIENCE_PATTERNS):
+        return True
+    # reqwest::Client has a 30s default timeout — any file using it is resilient
+    return 'reqwest::Client' in content or 'ClientBuilder' in content
 
 
 def extract_rust_calls(service_name: str, source_dir: str, config) -> list:

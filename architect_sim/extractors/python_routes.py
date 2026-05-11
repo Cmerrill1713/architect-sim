@@ -125,9 +125,15 @@ PY_RESILIENCE_PATTERNS = [
 
 
 def _has_python_resilience(content: str, pos: int) -> bool:
-    """Check if nearby code has resilience patterns."""
+    """Check if file has resilience patterns. Uses full file for session/client patterns."""
+    # Check nearby (1000 chars) for call-level patterns
     window = content[max(0, pos - 1000):pos + 1000]
-    return any(p in window for p in PY_RESILIENCE_PATTERNS)
+    if any(p in window for p in PY_RESILIENCE_PATTERNS):
+        return True
+    # Also check entire file for session/client-level patterns (set once, used everywhere)
+    file_patterns = ['httpx.Client(', 'httpx.AsyncClient(', 'requests.Session(',
+                     'aiohttp.ClientSession(', 'ClientTimeout(', 'max_retries=']
+    return any(p in content for p in file_patterns)
 
 
 def extract_python_calls(service_name: str, source_dir: str, config) -> list:
