@@ -3,34 +3,43 @@ from ..models import Finding
 
 
 def check_contracts(blueprints: dict, config) -> list:
-    """Verify all inter-service calls match actual endpoints.
-
-    Args:
-        blueprints: {service_name: ServiceBlueprint}
-        config: Config object
-
-    Returns:
-        List of Finding objects for contract violations
-    """
+    """Verify all inter-service calls match actual endpoints."""
     findings = []
 
-    # Build endpoint index: (service, method, path) -> Endpoint
+    # Build endpoint index with fuzzy service name matching
+    # Index by both exact name AND base name (strip -go/-rust/-py)
     endpoint_index = {}
     for bp in blueprints.values():
         for ep in bp.endpoints:
+            # Exact service name
             key = (bp.name, ep.method, ep.path)
             endpoint_index[key] = ep
             normalized = ep.path.rstrip("/") if ep.path != "/" else "/"
-            key_norm = (bp.name, ep.method, normalized)
-            endpoint_index[key_norm] = ep
+            endpoint_index[(bp.name, ep.method, normalized)] = ep
+            # Base name (strip language suffix)
+            base = _base_name(bp.name)
+            if base != bp.name:
+                endpoint_index[(base, ep.method, ep.path)] = ep
+                endpoint_index[(base, ep.method, normalized)] = ep
+
+    # Build name->blueprint lookup with fuzzy matching
+    bp_lookup = {}
+    for name, bp in blueprints.items():
+        bp_lookup[name] = bp
+        bp_lookup[_base_name(name)] = bp
 
     # Check each outbound call
     for bp in blueprints.values():
         for call in bp.outbound_calls:
             callee = call.callee_service
+            path = call.path
 
-            # Skip calls with unresolved paths
-            if call.path == "/" and call.resolution_method in ("discovery", "ports"):
+            # Skip unresolved paths (base URL stored in variable)
+            if path == "/" and call.resolution_method in ("discovery", "ports"):
+                continue
+
+            # Skip base URL artifacts: path is "/" or "servicename/"
+            if path == "/" or (path.endswith("/") and "/" not in path.rstrip("/")):
                 continue
 
             # Skip calls to unknown services (reported separately)
@@ -40,7 +49,7 @@ def check_contracts(blueprints: dict, config) -> list:
                     severity="critical",
                     fixability="needs_user",
                     service=bp.name,
-                    endpoint=f"{call.method} {call.path}",
+                    endpoint=f"{call.method} {path}",
                     file_path=call.file_path,
                     line_number=call.line_number,
                     details=f"{bp.name} calls port {call.callee_port} which maps to no known service",
@@ -48,31 +57,54 @@ def check_contracts(blueprints: dict, config) -> list:
                 ))
                 continue
 
-            # Check if callee service exists in blueprints
-            if callee not in blueprints:
+            # Resolve callee with fuzzy matching
+            resolved_bp = bp_lookup.get(callee) or bp_lookup.get(_base_name(callee))
+
+            if resolved_bp is None:
                 findings.append(Finding(
                     finding_type="phantom_call",
                     severity="warning",
                     fixability="needs_context",
                     service=bp.name,
-                    endpoint=f"{call.method} {call.path}",
+                    endpoint=f"{call.method} {path}",
                     file_path=call.file_path,
                     line_number=call.line_number,
-                    details=f"{bp.name} calls {callee}{call.path} but {callee} has no extracted blueprint (may not be scanned yet)",
+                    details=f"{bp.name} calls {callee}{path} but {callee} has no extracted blueprint",
                     suggested_fix=f"Ensure {callee} source directory is included in scan",
                 ))
                 continue
 
-            # Check if the specific endpoint exists
-            path_normalized = call.path.rstrip("/") if call.path != "/" else "/"
-            key_exact = (callee, call.method, call.path)
-            key_norm = (callee, call.method, path_normalized)
+            # Use the resolved service name for endpoint lookup
+            resolved_name = resolved_bp.name
+            callee_base = _base_name(callee)
 
-            if key_exact not in endpoint_index and key_norm not in endpoint_index:
-                any_method_match = any(
-                    (callee, m, call.path) in endpoint_index or (callee, m, path_normalized) in endpoint_index
-                    for m in ["GET", "POST", "PUT", "DELETE", "PATCH"]
-                )
+            # Strip query params for matching: /facts?limit=1 -> /facts
+            path_no_query = path.split("?")[0] if "?" in path else path
+            path_normalized = path_no_query.rstrip("/") if path_no_query != "/" else "/"
+
+            # Check if the specific endpoint exists (try exact, base, and fuzzy)
+            found = False
+            for svc_key in [resolved_name, callee_base, callee]:
+                for p in [path, path_no_query, path_normalized]:
+                    if (svc_key, call.method, p) in endpoint_index:
+                        found = True
+                        break
+                if found:
+                    break
+
+            if not found:
+                # Check if endpoint exists with different method
+                any_method_match = False
+                for m in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
+                    for svc_key in [resolved_name, callee_base]:
+                        for p in [path, path_no_query, path_normalized]:
+                            if (svc_key, m, p) in endpoint_index:
+                                any_method_match = True
+                                break
+                        if any_method_match:
+                            break
+                    if any_method_match:
+                        break
 
                 if any_method_match:
                     findings.append(Finding(
@@ -80,10 +112,10 @@ def check_contracts(blueprints: dict, config) -> list:
                         severity="critical",
                         fixability="auto",
                         service=bp.name,
-                        endpoint=f"{call.method} {call.path}",
+                        endpoint=f"{call.method} {path}",
                         file_path=call.file_path,
                         line_number=call.line_number,
-                        details=f"{bp.name} calls {call.method} {callee}{call.path} but endpoint exists with different HTTP method",
+                        details=f"{bp.name} calls {call.method} {resolved_name}{path} but endpoint exists with different HTTP method",
                         suggested_fix=f"Update the HTTP method in the caller to match the endpoint definition",
                     ))
                 else:
@@ -92,34 +124,58 @@ def check_contracts(blueprints: dict, config) -> list:
                         severity="critical",
                         fixability="needs_user",
                         service=bp.name,
-                        endpoint=f"{call.method} {call.path}",
+                        endpoint=f"{call.method} {path}",
                         file_path=call.file_path,
                         line_number=call.line_number,
-                        details=f"{bp.name} calls {call.method} {callee}{call.path} but this endpoint does not exist on {callee}",
-                        suggested_fix=f"Either create {call.method} {call.path} on {callee}, remove the call, or redirect to the correct endpoint",
+                        details=f"{bp.name} calls {call.method} {resolved_name}{path} but endpoint not found on {resolved_name}",
+                        suggested_fix=f"Either create {call.method} {path} on {resolved_name}, remove the call, or redirect",
                         impact=1,
                     ))
 
-    # Check for orphan endpoints (defined but never called)
+    # Check for orphan endpoints
+    # Build set of all called endpoints (with fuzzy service names + query param stripping)
     called_endpoints = set()
     for bp in blueprints.values():
         for call in bp.outbound_calls:
-            called_endpoints.add((call.callee_service, call.method, call.path))
-            path_norm = call.path.rstrip("/") if call.path != "/" else "/"
-            called_endpoints.add((call.callee_service, call.method, path_norm))
+            callee = call.callee_service
+            callee_base = _base_name(callee)
+            path_no_query = call.path.split("?")[0] if "?" in call.path else call.path
+            path_norm = path_no_query.rstrip("/") if path_no_query != "/" else "/"
+            for svc in [callee, callee_base]:
+                for p in [call.path, path_no_query, path_norm]:
+                    called_endpoints.add((svc, call.method, p))
+                    # Also add with any method (some calls have wrong method detection)
+                    for m in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
+                        called_endpoints.add((svc, m, p))
 
-    SKIP_PATHS = {"/health", "/live", "/ready", "/metrics", "/capabilities", "/debug", "/version"}
+    # Paths that are typically public APIs / infrastructure, not inter-service
+    SKIP_PATHS = {"/health", "/live", "/ready", "/metrics", "/capabilities",
+                  "/debug", "/version", "/swagger", "/docs", "/openapi.json"}
+    SKIP_PREFIXES = ("/health", "/live", "/ready", "/metrics", "/debug",
+                     "/ops/", "/api/health", "/api/v1/", "/v1/", "/swagger", "/docs")
 
     for bp in blueprints.values():
+        base = _base_name(bp.name)
         for ep in bp.endpoints:
             path_norm = ep.path.rstrip("/") if ep.path != "/" else "/"
+
+            # Skip standard infra/public endpoints
             if path_norm in SKIP_PATHS or ep.path in SKIP_PATHS:
                 continue
+            if any(path_norm.startswith(p) for p in SKIP_PREFIXES):
+                continue
 
-            key = (bp.name, ep.method, ep.path)
-            key_norm = (bp.name, ep.method, path_norm)
+            # Check if called (by exact name or base name)
+            is_called = False
+            for svc in [bp.name, base]:
+                if (svc, ep.method, ep.path) in called_endpoints:
+                    is_called = True
+                    break
+                if (svc, ep.method, path_norm) in called_endpoints:
+                    is_called = True
+                    break
 
-            if key not in called_endpoints and key_norm not in called_endpoints:
+            if not is_called:
                 findings.append(Finding(
                     finding_type="orphan_endpoint",
                     severity="info",
@@ -138,20 +194,25 @@ def check_contracts(blueprints: dict, config) -> list:
 def check_dependency_drift(blueprints: dict, config) -> list:
     """Compare code-level dependencies vs declared dependencies.
 
-    Finds:
-    - Undeclared deps (code calls service not in depends_on)
-    - Phantom deps (depends_on lists service that code never calls)
+    Only reports for services that HAVE contract entries.
+    Services with no contract entry are skipped — you can't have
+    "undeclared deps" if you have no declarations at all.
     """
     findings = []
 
     for bp in blueprints.values():
+        # Skip services with no contract entry
+        declared_deps = set(config.get_declared_deps(bp.name))
+        if not declared_deps and bp.name not in config.contracts:
+            continue
+
+        # Actual deps from code
         actual_deps = set()
         for call in bp.outbound_calls:
             if not call.callee_service.startswith("unknown:"):
                 actual_deps.add(call.callee_service)
 
-        declared_deps = set(config.get_declared_deps(bp.name))
-
+        # Undeclared: in code but not in YAML
         for dep in actual_deps - declared_deps:
             if not any(_fuzzy_match(dep, d) for d in declared_deps):
                 findings.append(Finding(
@@ -163,6 +224,7 @@ def check_dependency_drift(blueprints: dict, config) -> list:
                     suggested_fix=f"Add '{dep}' to depends_on list for {bp.name}",
                 ))
 
+        # Phantom declared: in YAML but not in code
         for dep in declared_deps - actual_deps:
             if not any(_fuzzy_match(dep, a) for a in actual_deps):
                 findings.append(Finding(
@@ -171,7 +233,7 @@ def check_dependency_drift(blueprints: dict, config) -> list:
                     fixability="needs_context",
                     service=bp.name,
                     details=f"{bp.name} declares dependency on {dep} but never calls it in code",
-                    suggested_fix=f"Remove '{dep}' from depends_on if truly unused, or the call may be indirect",
+                    suggested_fix=f"Remove '{dep}' from depends_on if truly unused",
                 ))
 
     return findings
@@ -181,13 +243,17 @@ def check_circular_deps(blueprints: dict) -> list:
     """Detect circular dependencies in the service graph."""
     findings = []
 
-    # Build adjacency list
+    # Build adjacency list (skip self-references)
     graph = {}
     for bp in blueprints.values():
         deps = set()
         for call in bp.outbound_calls:
-            if not call.callee_service.startswith("unknown:"):
-                deps.add(call.callee_service)
+            callee = call.callee_service
+            if not callee.startswith("unknown:"):
+                # Skip self-references
+                if callee == bp.name or _base_name(callee) == _base_name(bp.name):
+                    continue
+                deps.add(callee)
         graph[bp.name] = deps
 
     # DFS cycle detection
@@ -215,7 +281,17 @@ def check_circular_deps(blueprints: dict) -> list:
         if node not in visited:
             dfs(node, [])
 
+    # Deduplicate cycles (same cycle can be found starting from different nodes)
+    seen_cycles = set()
     for cycle in cycles:
+        unique = set(cycle)
+        if len(unique) <= 1:
+            continue  # Self-reference, already filtered
+        cycle_key = frozenset(unique)
+        if cycle_key in seen_cycles:
+            continue
+        seen_cycles.add(cycle_key)
+
         cycle_str = " -> ".join(cycle)
         findings.append(Finding(
             finding_type="circular_dep",
@@ -230,12 +306,14 @@ def check_circular_deps(blueprints: dict) -> list:
     return findings
 
 
+def _base_name(name: str) -> str:
+    """Strip language suffix from service name: 'rag-gateway-rust' -> 'rag-gateway'."""
+    for suffix in ["-go", "-rust", "-py", "-python", "-service"]:
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
+    return name
+
+
 def _fuzzy_match(a: str, b: str) -> bool:
     """Check if two service names refer to the same service."""
-    suffixes = ["-go", "-rust", "-py", "-python", "-service"]
-    a_base = a
-    b_base = b
-    for s in suffixes:
-        a_base = a_base.replace(s, "")
-        b_base = b_base.replace(s, "")
-    return a_base == b_base
+    return _base_name(a) == _base_name(b)
