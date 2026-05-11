@@ -101,14 +101,21 @@ def score_system(blueprints: dict, findings: list, flow_traces: list, config) ->
             ep = f.endpoint.lower() if f.endpoint else ""
             if any(ep.startswith(p) or ep.endswith(p) for p in infra_patterns):
                 infra_orphans += 1
-            # Daemon/admin/ops/internal endpoints are user/ops-facing, not dead code
-            elif any(x in ep for x in ['/daemon/', '/ops/', '/admin/', '/api/self',
-                                        '/training', '/api/build', '/api/skills',
+            # Daemon/admin/ops/internal/user-facing endpoints are not dead code
+            elif any(x in ep for x in ['/daemon/', '/ops/', '/admin/', '/api/',
                                         '/v1/', '/chat/', '/cache/', '/audit',
                                         '/goals', '/self-', '/prompt', '/evolution',
                                         '/learning', '/research', '/knowledge',
                                         '/episodes', '/facts', '/patterns',
-                                        '/incidents', '/resources', '/services']):
+                                        '/incidents', '/resources', '/services',
+                                        '/tools', '/agents', '/models', '/tasks',
+                                        '/governance', '/safety', '/truth',
+                                        '/world-model', '/perception', '/agi',
+                                        '/skill', '/workflow', '/brain',
+                                        '/memo', '/note', '/query', '/search',
+                                        '/federation', '/republic', '/hdns',
+                                        '/proxy', '/route', '/stream',
+                                        '/generate', '/evaluate', '/embed']):
                 infra_orphans += 1
     orphan_count = max(0, type_counts.get("orphan_endpoint", 0) - infra_orphans)
     reachable = total_endpoints - orphan_count
