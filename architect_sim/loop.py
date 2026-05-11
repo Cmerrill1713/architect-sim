@@ -23,6 +23,7 @@ from .profiling.hardware import detect_hardware, recommend_models, format_hardwa
 from .scoring.history import ScoreHistory
 from .reporting.markdown_report import generate_report
 from .reporting.json_report import generate_json
+from .reporting.recommendations import generate_recommendations
 from .reporting.ledger import Ledger
 
 
@@ -175,10 +176,26 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     model_recs = recommend_models(hardware, task_types=task_counts if task_counts else None)
     print(f"  {hardware.cpu_model}, {hardware.ram_total_gb:.0f}GB, {len(model_recs)} models fit ({time.time() - start:.1f}s)", file=sys.stderr)
 
+    # Phase 7: Generate recommendations
+    print("Phase 7: Generating action plan...", file=sys.stderr)
+    action_plan = generate_recommendations(
+        grade, findings, blueprints,
+        llm_calls=all_llm_calls,
+        runtime_events=runtime_events,
+        correlations=correlations,
+        hardware=hardware,
+        model_recs=model_recs,
+        temporal_profiles=temporal_profiles,
+    )
+    rec_count = action_plan.count("### ")
+    print(f"  {rec_count} prioritized recommendations", file=sys.stderr)
+
     if output_format == "json":
         report = generate_json(grade, findings, traces, blueprints)
     else:
-        report = generate_report(grade, findings, traces, blueprints)
+        # Action plan goes FIRST — it's the most important output
+        report = action_plan + "\n\n---\n\n"
+        report += generate_report(grade, findings, traces, blueprints)
         report += "\n\n" + format_temporal_report(temporal_profiles)
         if all_llm_calls:
             report += "\n\n" + format_llm_report(all_llm_calls)
