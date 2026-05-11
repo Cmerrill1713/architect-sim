@@ -3,16 +3,49 @@ import re
 from ..models import Finding
 
 # Infrastructure ports that are NOT service dependencies — these are databases,
-# message brokers, model servers, and other shared infrastructure.
+# message brokers, model servers, reverse proxies, and other shared infrastructure
+# that don't expose application-level HTTP routes.
 INFRASTRUCTURE_PORTS = frozenset({
+    # Databases
+    3306,   # mysql
     5432,   # postgres
+    5433,   # postgres alt
     6379,   # redis
+    6380,   # redis alt
+    27017,  # mongodb
+    9042,   # cassandra
+    # Message brokers
     4222,   # nats
+    5672,   # rabbitmq
+    9092,   # kafka
+    # Monitoring
     9090,   # prometheus
+    9091,   # prometheus pushgateway
+    3100,   # grafana
+    9200,   # elasticsearch
+    # LLM servers (internal, managed by swap/proxy)
     11434,  # ollama
     18088,  # internal llama-server
     18100,  # internal backend
     18200,  # internal backend
+    # Infrastructure
+    2379,   # etcd
+    8500,   # consul (when used as infra, not app)
+    8300,   # consul alt
+    4317,   # otel collector grpc
+    4318,   # otel collector http
+})
+
+# Service name patterns that are infrastructure, not application services
+INFRASTRUCTURE_NAMES = frozenset({
+    "redis", "postgres", "postgresql", "mysql", "mongodb", "cassandra",
+    "nats", "rabbitmq", "kafka", "zookeeper",
+    "prometheus", "grafana", "elasticsearch", "kibana", "jaeger",
+    "etcd", "consul", "vault",
+    "nginx", "caddy", "traefik", "envoy", "haproxy",
+    "ollama", "llama-server", "llama-swap", "vllm", "sglang",
+    "bonsai-mlx", "bonsai", "mlx-server",
+    "archon", "langsmith", "langfuse",
 })
 
 
@@ -61,6 +94,11 @@ def check_contracts(blueprints: dict, config) -> list:
             if call.callee_port in INFRASTRUCTURE_PORTS:
                 continue
 
+            # Skip calls to infrastructure services by name
+            callee_lower = _base_name(callee).lower()
+            if callee_lower in INFRASTRUCTURE_NAMES:
+                continue
+
             # Skip calls to unknown services (reported separately)
             if callee.startswith("unknown:"):
                 findings.append(Finding(
@@ -80,6 +118,16 @@ def check_contracts(blueprints: dict, config) -> list:
             resolved_bp = bp_lookup.get(callee) or bp_lookup.get(_base_name(callee))
 
             if resolved_bp is None:
+                # Skip if callee is a known port (managed service, just not parsed)
+                # This covers LLM servers, proxies, databases, etc.
+                callee_port = call.callee_port
+                if callee_port and callee_port in config.port_to_service:
+                    continue  # Known service, just no source to parse
+
+                # Skip if callee looks like infrastructure
+                if callee_lower in INFRASTRUCTURE_NAMES:
+                    continue
+
                 findings.append(Finding(
                     finding_type="phantom_call",
                     severity="warning",
@@ -91,6 +139,11 @@ def check_contracts(blueprints: dict, config) -> list:
                     details=f"{bp.name} calls {callee}{path} but {callee} has no extracted blueprint",
                     suggested_fix=f"Ensure {callee} source directory is included in scan",
                 ))
+                continue
+
+            # Skip if callee exists but has zero extractable endpoints
+            # (it's a proxy, binary, or infrastructure service)
+            if len(resolved_bp.endpoints) == 0:
                 continue
 
             # Use the resolved service name for endpoint lookup
@@ -231,6 +284,8 @@ def check_dependency_drift(blueprints: dict, config) -> list:
             if not call.callee_service.startswith("unknown:"):
                 if call.callee_port in INFRASTRUCTURE_PORTS:
                     continue
+                if _base_name(call.callee_service).lower() in INFRASTRUCTURE_NAMES:
+                    continue
                 actual_deps.add(call.callee_service)
 
         # Undeclared: in code but not in YAML
@@ -274,8 +329,10 @@ def check_circular_deps(blueprints: dict) -> list:
                 # Skip self-references
                 if callee == bp.name or _base_name(callee) == _base_name(bp.name):
                     continue
-                # Skip infrastructure ports
+                # Skip infrastructure
                 if call.callee_port in INFRASTRUCTURE_PORTS:
+                    continue
+                if _base_name(callee).lower() in INFRASTRUCTURE_NAMES:
                     continue
                 deps.add(callee)
         graph[bp.name] = deps

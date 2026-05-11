@@ -96,11 +96,13 @@ def simulate_all(blueprints: dict, config: Config) -> tuple:
     traces, flow_findings = trace_all_flows(blueprints, config)
     findings.extend(flow_findings)
 
-    # Deduplicate findings by (type, service, endpoint)
+    # Deduplicate findings by (type, service, endpoint) — ignore details
+    # because flow tracer and contract checker find the same issues with
+    # different wording. Keep the first (contract checker) finding.
     seen = set()
     unique_findings = []
     for f in findings:
-        key = (f.finding_type, f.service, f.endpoint, f.details)
+        key = (f.finding_type, f.service, f.endpoint)
         if key not in seen:
             seen.add(key)
             unique_findings.append(f)
