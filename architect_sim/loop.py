@@ -137,6 +137,17 @@ def run_analyze(config: Config, output_format: str = "markdown") -> tuple:
     sim_time = time.time() - start
     print(f"  Found {len(findings)} issues ({sim_time:.1f}s)", file=sys.stderr)
 
+    # Phase 2b: Live probes (optional — only runs if services are reachable)
+    print("Phase 2b: Running live probes...", file=sys.stderr)
+    start = time.time()
+    try:
+        from .extractors.live_probe import run_live_probes
+        live_findings = run_live_probes(config)
+        findings.extend(live_findings)
+        print(f"  {len(live_findings)} live probe findings ({time.time() - start:.1f}s)", file=sys.stderr)
+    except Exception as e:
+        print(f"  Skipped: {e} ({time.time() - start:.1f}s)", file=sys.stderr)
+
     print("Phase 3: Grading system...", file=sys.stderr)
     grade = score_system(blueprints, findings, traces, config)
     print(f"  Grade: {grade.grade} ({grade.overall:.1f}/100)", file=sys.stderr)

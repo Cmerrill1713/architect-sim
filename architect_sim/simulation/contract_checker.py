@@ -1,5 +1,19 @@
 """Contract verification: check that inter-service calls land on real endpoints."""
+import re
 from ..models import Finding
+
+# Infrastructure ports that are NOT service dependencies — these are databases,
+# message brokers, model servers, and other shared infrastructure.
+INFRASTRUCTURE_PORTS = frozenset({
+    5432,   # postgres
+    6379,   # redis
+    4222,   # nats
+    9090,   # prometheus
+    11434,  # ollama
+    18088,  # internal llama-server
+    18100,  # internal backend
+    18200,  # internal backend
+})
 
 
 def check_contracts(blueprints: dict, config) -> list:
@@ -34,12 +48,17 @@ def check_contracts(blueprints: dict, config) -> list:
             callee = call.callee_service
             path = call.path
 
-            # Skip unresolved paths (base URL stored in variable)
-            if path == "/" and call.resolution_method in ("discovery", "ports"):
+            # Skip root path "/" calls — these are base URL references,
+            # not real endpoint calls
+            if path == "/":
                 continue
 
-            # Skip base URL artifacts: path is "/" or "servicename/"
-            if path == "/" or (path.endswith("/") and "/" not in path.rstrip("/")):
+            # Skip base URL artifacts: "servicename/" with no real path
+            if path.endswith("/") and "/" not in path.rstrip("/"):
+                continue
+
+            # Skip calls to infrastructure ports (databases, brokers, etc.)
+            if call.callee_port in INFRASTRUCTURE_PORTS:
                 continue
 
             # Skip calls to unknown services (reported separately)
@@ -206,10 +225,12 @@ def check_dependency_drift(blueprints: dict, config) -> list:
         if not declared_deps and bp.name not in config.contracts:
             continue
 
-        # Actual deps from code
+        # Actual deps from code (excluding infrastructure)
         actual_deps = set()
         for call in bp.outbound_calls:
             if not call.callee_service.startswith("unknown:"):
+                if call.callee_port in INFRASTRUCTURE_PORTS:
+                    continue
                 actual_deps.add(call.callee_service)
 
         # Undeclared: in code but not in YAML
@@ -243,7 +264,7 @@ def check_circular_deps(blueprints: dict) -> list:
     """Detect circular dependencies in the service graph."""
     findings = []
 
-    # Build adjacency list (skip self-references)
+    # Build adjacency list (skip self-references and infrastructure)
     graph = {}
     for bp in blueprints.values():
         deps = set()
@@ -252,6 +273,9 @@ def check_circular_deps(blueprints: dict) -> list:
             if not callee.startswith("unknown:"):
                 # Skip self-references
                 if callee == bp.name or _base_name(callee) == _base_name(bp.name):
+                    continue
+                # Skip infrastructure ports
+                if call.callee_port in INFRASTRUCTURE_PORTS:
                     continue
                 deps.add(callee)
         graph[bp.name] = deps

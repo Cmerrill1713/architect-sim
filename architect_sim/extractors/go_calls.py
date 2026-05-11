@@ -46,6 +46,14 @@ RETRY_WRAPPER_RE = re.compile(
     r'retry\.(?:Do|WithConfig|DefaultConfig)\(', re.MULTILINE
 )
 
+# Resilience patterns: circuit breakers, resilient HTTP clients, retries
+RESILIENCE_PATTERNS = [
+    re.compile(r'FastHTTPClient|DefaultHTTPClient', re.MULTILINE),
+    re.compile(r'http\.Client\s*\{[^}]*Timeout\s*:', re.MULTILINE | re.DOTALL),
+    re.compile(r'circuitbreaker|circuit_breaker|CircuitBreaker', re.MULTILINE),
+    re.compile(r'\bretry\b|\battempt\b', re.MULTILINE),
+]
+
 
 def extract_go_calls(service_name: str, source_dir: str, config) -> list:
     """Extract all outbound inter-service HTTP calls from Go source files.
@@ -84,6 +92,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
             callee_service = url_map.get(key, {}).get("service", key)
             callee_port = url_map.get(key, {}).get("port", config.resolve_service(callee_service))
             has_retry = _has_nearby_retry(content, match.start())
+            has_resil = _has_resilience(content, match.start())
 
             calls.append(Call(
                 caller_service=service_name,
@@ -94,7 +103,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method="serviceURLs",
-                retry_config={"detected": True} if has_retry else None,
+                retry_config={"detected": True, "resilient": True} if (has_retry or has_resil) else None,
             ))
 
         # Pattern 2: Discovery calls
@@ -150,6 +159,8 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
             if port == own_port:
                 continue
 
+            has_resil = _has_resilience(content, match.start())
+
             calls.append(Call(
                 caller_service=service_name,
                 callee_service=config.resolve_port(port),
@@ -159,6 +170,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method="hardcoded",
+                retry_config={"detected": True, "resilient": True} if has_resil else None,
             ))
 
     return calls
@@ -227,3 +239,19 @@ def _has_nearby_retry(content: str, pos: int) -> bool:
     window_start = max(0, pos - 1000)
     window = content[window_start:pos + 500]
     return bool(RETRY_WRAPPER_RE.search(window))
+
+
+def _has_resilience(content: str, pos: int) -> bool:
+    """Check if the call site has any resilience pattern nearby.
+
+    Detects: FastHTTPClient, DefaultHTTPClient, http.Client with Timeout,
+    circuit breakers, retry/attempt loops.
+    """
+    window_start = max(0, pos - 1500)
+    window_end = min(len(content), pos + 500)
+    window = content[window_start:window_end]
+
+    for pattern in RESILIENCE_PATTERNS:
+        if pattern.search(window):
+            return True
+    return False

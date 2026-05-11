@@ -177,7 +177,55 @@ class Config:
                 if path.exists():
                     data = load_yaml(str(path))
                     self.contracts = data.get("services", data)
-                    return
+                    break
+            if self.contracts:
+                break
+
+        # Also merge dependencies from service-manifest.json if present.
+        # The manifest often has more complete dependency information.
+        self._merge_manifest_deps()
+
+    def _merge_manifest_deps(self):
+        """Merge dependency info from JSON service manifests into contracts.
+
+        Searches for service-manifest.json (or similar) files that contain
+        a {services: [{name, dependencies}, ...]} schema and merges their
+        depends_on lists into self.contracts.
+        """
+        manifest_names = ["service-manifest.json", "services.json"]
+        search_dirs = [self.root, self.root / "config"]
+        # Also check one level deep for common layouts like project/services/
+        for d in self.root.iterdir():
+            if d.is_dir() and not d.name.startswith("."):
+                search_dirs.append(d)
+                svc_sub = d / "services"
+                if svc_sub.is_dir():
+                    search_dirs.append(svc_sub)
+
+        for search_dir in search_dirs:
+            if not search_dir.is_dir():
+                continue
+            for name in manifest_names:
+                path = search_dir / name
+                if not path.exists():
+                    continue
+                try:
+                    with open(path) as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    continue
+                services = data.get("services", [])
+                if not isinstance(services, list):
+                    continue
+                for entry in services:
+                    svc_name = entry.get("name", "")
+                    deps = entry.get("dependencies", [])
+                    if svc_name and deps:
+                        if svc_name not in self.contracts:
+                            self.contracts[svc_name] = {}
+                        existing = self.contracts[svc_name].get("depends_on", [])
+                        merged = list(set(existing + deps))
+                        self.contracts[svc_name]["depends_on"] = merged
 
     def _auto_detect_services_dir(self) -> Path:
         """Auto-detect the directory containing service source code.
