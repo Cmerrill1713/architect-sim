@@ -88,6 +88,21 @@ class GradeReport:
 
 
 @dataclass
+class LLMCall:
+    service_name: str
+    file_path: str
+    line_number: int
+    call_type: str              # "complete", "chat_completions", "langchain", "ollama"
+    model: str                  # Model name/alias if extractable, "" if not
+    temperature: float          # Temperature if extractable, -1 if not
+    max_tokens: int             # Max tokens if extractable, -1 if not
+    task_type: str              # "classification", "generation", "extraction", "planning", "routing", "code", "unknown"
+    system_prompt_preview: str  # First 100 chars of system prompt if visible
+    has_structured_output: bool  # JSON mode or function calling detected
+    estimated_complexity: str   # "simple", "moderate", "complex"
+
+
+@dataclass
 class IterationRecord:
     iteration: int
     finding: Optional[Finding] = None
