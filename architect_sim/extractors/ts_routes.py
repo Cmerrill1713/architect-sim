@@ -420,13 +420,19 @@ def extract_ts_calls(service_name: str, source_dir: str, config) -> list:
         file_str = str(ts_file)
         seen_lines = set()  # Avoid duplicate calls on same line
 
+        # TS/JS resilience detection
+        ts_resilience_patterns = ['AbortController', 'signal:', 'timeout:', 'timeout=',
+                                  'retry', 'retries', 'maxRetries', 'AbortSignal.timeout',
+                                  'axios.create', 'got(', 'ky(']
+        file_has_resilience = any(p in content for p in ts_resilience_patterns)
+
         def _add_call(port, path, method, line_num, resolution):
             if port == own_port:
                 return
             if line_num in seen_lines:
                 return
             seen_lines.add(line_num)
-            calls.append(Call(
+            call = Call(
                 caller_service=service_name,
                 callee_service=config.resolve_port(port),
                 callee_port=port,
@@ -435,7 +441,10 @@ def extract_ts_calls(service_name: str, source_dir: str, config) -> list:
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method=resolution,
-            ))
+            )
+            if file_has_resilience:
+                call.retry_config = {"type": "timeout_or_abort"}
+            calls.append(call)
 
         # --- fetch() with plain strings ---
         for match in FETCH_PLAIN_RE.finditer(content):
