@@ -45,7 +45,7 @@ def extract_python_routes(service_name: str, port: int, source_dir: str) -> list
     source_path = Path(source_dir)
 
     for py_file in sorted(source_path.rglob("*.py")):
-        if "__pycache__" in str(py_file) or "venv" in str(py_file):
+        if _is_test_or_vendor(py_file):
             continue
 
         try:
@@ -145,7 +145,7 @@ def extract_python_calls(service_name: str, source_dir: str, config) -> list:
     source_path = Path(source_dir)
 
     for py_file in sorted(source_path.rglob("*.py")):
-        if "__pycache__" in str(py_file) or "venv" in str(py_file):
+        if _is_test_or_vendor(py_file):
             continue
 
         try:
@@ -157,6 +157,8 @@ def extract_python_calls(service_name: str, source_dir: str, config) -> list:
 
         # Hardcoded URLs
         for match in PY_HARDCODED_URL_RE.finditer(content):
+            if _inside_python_function(content, match.start(), "self_test"):
+                continue
             full_url, port_str, path = match.groups()
             port = int(port_str)
             line_num = content[:match.start()].count("\n") + 1
@@ -183,6 +185,8 @@ def extract_python_calls(service_name: str, source_dir: str, config) -> list:
 
         # requests/httpx calls with URLs
         for match in PY_REQUEST_RE.finditer(content):
+            if _inside_python_function(content, match.start(), "self_test"):
+                continue
             method, url, var = match.groups()
             if not url:
                 continue
@@ -270,3 +274,28 @@ def _detect_python_method(content: str, pos: int) -> str:
         return m.group(1).upper()
 
     return "GET"
+
+
+def _is_test_or_vendor(path: Path) -> bool:
+    path_str = str(path)
+    name = path.name
+    return (
+        "__pycache__" in path_str
+        or "venv" in path_str
+        or ".venv" in path_str
+        or "tests" in path.parts
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )
+
+
+def _inside_python_function(content: str, pos: int, function_name: str) -> bool:
+    prefix = content[:pos]
+    match = list(re.finditer(rf"^def\s+{re.escape(function_name)}\s*\(", prefix, re.MULTILINE))
+    if not match:
+        return False
+    start = match[-1].start()
+    next_def = re.search(r"^(?:def|async\s+def)\s+\w+\s*\(", content[start + 1 :], re.MULTILINE)
+    if next_def is None:
+        return True
+    return pos < start + 1 + next_def.start()

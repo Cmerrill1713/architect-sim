@@ -45,7 +45,7 @@ def extract_rust_routes(service_name: str, port: int, source_dir: str) -> list:
     source_path = Path(source_dir)
 
     for rs_file in sorted(source_path.rglob("*.rs")):
-        if "target" in str(rs_file) or "vendor" in str(rs_file):
+        if _is_test_or_vendor(rs_file):
             continue
 
         try:
@@ -131,7 +131,7 @@ def extract_rust_calls(service_name: str, source_dir: str, config) -> list:
     source_path = Path(source_dir)
 
     for rs_file in sorted(source_path.rglob("*.rs")):
-        if "target" in str(rs_file) or "vendor" in str(rs_file):
+        if _is_test_or_vendor(rs_file):
             continue
 
         try:
@@ -213,3 +213,15 @@ def _detect_rust_method(content: str, pos: int) -> str:
     if ".delete(" in window or "Method::DELETE" in window:
         return "DELETE"
     return "GET"
+
+
+def _is_test_or_vendor(path: Path) -> bool:
+    parts = set(path.parts)
+    name = path.name
+    return (
+        "target" in parts
+        or "vendor" in parts
+        or "tests" in parts
+        or name.endswith("_test.rs")
+        or name.endswith(".test.rs")
+    )
