@@ -225,15 +225,48 @@ def _find_python_handler(lines: list, decorator_line: int) -> str:
 
 
 def _detect_python_method(content: str, pos: int) -> str:
-    """Detect HTTP method near a URL in Python code."""
-    window_start = max(0, pos - 200)
-    window_end = min(len(content), pos + 300)
-    window = content[window_start:window_end]
+    """Detect HTTP method near a URL in Python code.
 
-    if ".post(" in window or "POST" in window:
+    Uses line-based context to avoid false positives from neighboring code.
+    """
+    # Get the line and tight context (±3 lines)
+    line_start = content.rfind("\n", 0, pos) + 1
+    line_end = content.find("\n", pos)
+    if line_end == -1:
+        line_end = len(content)
+
+    ctx_start = line_start
+    for _ in range(3):
+        prev = content.rfind("\n", 0, ctx_start - 1)
+        if prev == -1:
+            ctx_start = 0
+            break
+        ctx_start = prev + 1
+
+    ctx_end = line_end
+    for _ in range(3):
+        nxt = content.find("\n", ctx_end + 1)
+        if nxt == -1:
+            ctx_end = len(content)
+            break
+        ctx_end = nxt
+
+    near = content[ctx_start:ctx_end]
+
+    # Priority 1: Explicit client method calls (requests.post, httpx.post, etc.)
+    method_call_re = re.compile(r'\.(post|get|put|delete|patch)\s*\(')
+    m = method_call_re.search(near)
+    if m:
+        return m.group(1).upper()
+
+    # Priority 2: urllib.request.Request with data= implies POST
+    if "Request(" in near and "data=" in near:
         return "POST"
-    if ".put(" in window or "PUT" in window:
-        return "PUT"
-    if ".delete(" in window or "DELETE" in window:
-        return "DELETE"
+
+    # Priority 3: method= keyword argument
+    method_kwarg_re = re.compile(r'method\s*=\s*["\'](\w+)["\']')
+    m = method_kwarg_re.search(near)
+    if m:
+        return m.group(1).upper()
+
     return "GET"

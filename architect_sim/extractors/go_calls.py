@@ -89,7 +89,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
         for match in SERVICE_URL_MAP_RE.finditer(content):
             key, path = match.groups()
             line_num = content[:match.start()].count("\n") + 1
-            method = _detect_http_method(content, match.start())
+            method, method_explicit = _detect_http_method(content, match.start())
 
             callee_service = url_map.get(key, {}).get("service", key)
             callee_port = url_map.get(key, {}).get("port", config.resolve_service(callee_service))
@@ -106,6 +106,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
                 line_number=line_num,
                 resolution_method="serviceURLs",
                 retry_config={"detected": True, "resilient": True} if (has_retry or has_resil) else None,
+                method_explicit=method_explicit,
             ))
 
         # Pattern 2: Discovery calls
@@ -117,7 +118,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
             resolved_port = config.resolve_service(resolved_name)
 
             path = _find_path_after_resolve(content, match.end())
-            method = _detect_http_method(content, match.start())
+            method, method_explicit = _detect_http_method(content, match.start())
 
             calls.append(Call(
                 caller_service=service_name,
@@ -128,6 +129,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method="discovery",
+                method_explicit=method_explicit,
             ))
 
         # Pattern 2b: ports.GetPort / ports.GetServiceURL
@@ -136,7 +138,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
             line_num = content[:match.start()].count("\n") + 1
             resolved_port = config.resolve_service(svc_name)
             path = _find_path_after_resolve(content, match.end())
-            method = _detect_http_method(content, match.start())
+            method, method_explicit = _detect_http_method(content, match.start())
 
             calls.append(Call(
                 caller_service=service_name,
@@ -147,6 +149,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method="ports",
+                method_explicit=method_explicit,
             ))
 
         # Pattern 3: Hardcoded URLs
@@ -154,7 +157,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
             full_url, port_str, path = match.groups()
             port = int(port_str)
             line_num = content[:match.start()].count("\n") + 1
-            method = _detect_http_method(content, match.start())
+            method, method_explicit = _detect_http_method(content, match.start())
 
             # Skip self-references (service calling its own port)
             own_port = config.resolve_service(service_name)
@@ -173,6 +176,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
                 line_number=line_num,
                 resolution_method="hardcoded",
                 retry_config={"detected": True, "resilient": True} if has_resil else None,
+                method_explicit=method_explicit,
             ))
 
     return calls
@@ -209,18 +213,77 @@ def _env_to_service(env_key: str) -> str:
 
 
 def _detect_http_method(content: str, pos: int) -> str:
-    """Detect the HTTP method used near a URL reference."""
-    window_start = max(0, pos - 200)
-    window_end = min(len(content), pos + 300)
-    window = content[window_start:window_end]
+    """Detect the HTTP method used near a URL reference.
 
-    if ".Post(" in window or ".POST(" in window or "POST" in window:
-        return "POST"
-    if ".Put(" in window or ".PUT(" in window:
-        return "PUT"
-    if ".Delete(" in window or ".DELETE(" in window:
-        return "DELETE"
-    return "GET"  # default
+    Uses line-based context to avoid false positives from neighboring calls.
+    In dense files like tool_execution.go, a char-window approach bleeds
+    into adjacent call sites. Instead, we find the statement containing
+    the URL and look at that statement + a few surrounding lines.
+    """
+    # Get the line containing the URL and a tight context around it
+    line_start = content.rfind("\n", 0, pos) + 1
+    line_end = content.find("\n", pos)
+    if line_end == -1:
+        line_end = len(content)
+
+    # The current line plus ~5 lines before and after (the same statement)
+    ctx_start = line_start
+    for _ in range(5):
+        prev = content.rfind("\n", 0, ctx_start - 1)
+        if prev == -1:
+            ctx_start = 0
+            break
+        ctx_start = prev + 1
+
+    ctx_end = line_end
+    for _ in range(5):
+        nxt = content.find("\n", ctx_end + 1)
+        if nxt == -1:
+            ctx_end = len(content)
+            break
+        ctx_end = nxt
+
+    near = content[ctx_start:ctx_end]
+    line = content[line_start:line_end]
+
+    # Priority 1: http.NewRequest / http.NewRequestWithContext with explicit method string
+    new_req_re = re.compile(
+        r'http\.NewRequest(?:WithContext)?\([^,]*,\s*"(GET|POST|PUT|DELETE|PATCH)"',
+    )
+    m = new_req_re.search(near)
+    if m:
+        return (m.group(1), True)
+
+    # Also check http.MethodPost etc constants
+    method_const_re = re.compile(r'http\.Method(Get|Post|Put|Delete|Patch)\b')
+    m = method_const_re.search(near)
+    if m:
+        return (m.group(1).upper(), True)
+
+    # Priority 2: Direct client method calls on the same line or nearby
+    if ".Post(" in near or ".PostForm(" in near:
+        return ("POST", True)
+    if ".Put(" in near:
+        return ("PUT", True)
+    if ".Delete(" in near:
+        return ("DELETE", True)
+    if ".Get(" in near:
+        return ("GET", True)
+
+    # Priority 3: Helper function on the SAME line (not just nearby)
+    if "callServiceJSON(" in line:
+        return ("POST", True)
+    if "httpPostJSON(" in line:
+        return ("POST", True)
+    if "callServiceGET(" in line or "httpGetJSON(" in line:
+        return ("GET", True)
+
+    # Priority 4: Body creation on the same or adjacent line suggests POST
+    body_re = re.compile(r'bytes\.New(?:Reader|Buffer)\(|strings\.NewReader\(')
+    if body_re.search(near):
+        return ("POST", True)
+
+    return ("GET", False)  # defaulted — low confidence
 
 
 def _find_path_after_resolve(content: str, pos: int) -> str:

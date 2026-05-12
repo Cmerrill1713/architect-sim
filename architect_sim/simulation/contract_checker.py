@@ -44,8 +44,9 @@ INFRASTRUCTURE_NAMES = frozenset({
     "etcd", "consul", "vault",
     "nginx", "caddy", "traefik", "envoy", "haproxy",
     "ollama", "llama-server", "llama-swap", "vllm", "sglang",
-    "bonsai-mlx", "bonsai", "mlx-server",
+    "bonsai-mlx", "bonsai", "mlx-server", "mlx-proxy", "mlx",
     "archon", "langsmith", "langfuse",
+    "comfyui", "comfyui-bridge", "searxng", "searxng-service",
 })
 
 
@@ -88,6 +89,11 @@ def check_contracts(blueprints: dict, config) -> list:
 
             # Skip base URL artifacts: "servicename/" with no real path
             if path.endswith("/") and "/" not in path.rstrip("/"):
+                continue
+
+            # Skip paths with unresolved template variables (JS ${...}, Python f-string {})
+            # These can't be matched statically
+            if "${" in path or "{{" in path:
                 continue
 
             # Skip calls to infrastructure ports (databases, brokers, etc.)
@@ -154,15 +160,42 @@ def check_contracts(blueprints: dict, config) -> list:
             path_no_query = path.split("?")[0] if "?" in path else path
             path_normalized = path_no_query.rstrip("/") if path_no_query != "/" else "/"
 
+            # Normalize format specifiers: /remediation/%s/status -> /remediation/:param/status
+            path_parameterized = _parameterize_path(path_normalized)
+
             # Check if the specific endpoint exists (try exact, base, and fuzzy)
+            # If method was not explicitly detected, try all methods
+            methods_to_try = [call.method]
+            if not getattr(call, 'method_explicit', True):
+                methods_to_try = ["GET", "POST", "PUT", "DELETE", "PATCH"]
+
             found = False
-            for svc_key in [resolved_name, callee_base, callee]:
-                for p in [path, path_no_query, path_normalized]:
-                    if (svc_key, call.method, p) in endpoint_index:
-                        found = True
+            for try_method in methods_to_try:
+                for svc_key in [resolved_name, callee_base, callee]:
+                    for p in [path, path_no_query, path_normalized]:
+                        if (svc_key, try_method, p) in endpoint_index:
+                            found = True
+                            break
+                    if found:
                         break
                 if found:
                     break
+
+            # If not found with exact path, try parameterized matching
+            if not found:
+                for try_method in methods_to_try:
+                    for svc_key in [resolved_name, callee_base]:
+                        for ep_key, ep in endpoint_index.items():
+                            if ep_key[0] != svc_key or ep_key[1] != try_method:
+                                continue
+                            ep_param = _parameterize_path(ep_key[2])
+                            if _paths_match(path_parameterized, ep_param):
+                                found = True
+                                break
+                        if found:
+                            break
+                    if found:
+                        break
 
             if not found:
                 # Check if endpoint exists with different method
@@ -178,18 +211,41 @@ def check_contracts(blueprints: dict, config) -> list:
                     if any_method_match:
                         break
 
+                # If still not found with exact paths, try parameterized matching
+                if not any_method_match:
+                    for m in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
+                        for svc_key in [resolved_name, callee_base]:
+                            for ep_key, ep in endpoint_index.items():
+                                if ep_key[0] != svc_key or ep_key[1] != m:
+                                    continue
+                                ep_param = _parameterize_path(ep_key[2])
+                                if _paths_match(path_parameterized, ep_param):
+                                    any_method_match = True
+                                    break
+                            if any_method_match:
+                                break
+                        if any_method_match:
+                            break
+
                 if any_method_match:
-                    findings.append(Finding(
-                        finding_type="method_mismatch",
-                        severity="critical",
-                        fixability="auto",
-                        service=bp.name,
-                        endpoint=f"{call.method} {path}",
-                        file_path=call.file_path,
-                        line_number=call.line_number,
-                        details=f"{bp.name} calls {call.method} {resolved_name}{path} but endpoint exists with different HTTP method",
-                        suggested_fix=f"Update the HTTP method in the caller to match the endpoint definition",
-                    ))
+                    # Only report method mismatch if the caller's method was
+                    # explicitly detected. When method_explicit is False, the
+                    # method defaulted to GET because the detector couldn't
+                    # find the actual method (e.g., URL assigned on one line,
+                    # http.NewRequest on another). These are almost always
+                    # false positives.
+                    if getattr(call, 'method_explicit', True):
+                        findings.append(Finding(
+                            finding_type="method_mismatch",
+                            severity="critical",
+                            fixability="auto",
+                            service=bp.name,
+                            endpoint=f"{call.method} {path}",
+                            file_path=call.file_path,
+                            line_number=call.line_number,
+                            details=f"{bp.name} calls {call.method} {resolved_name}{path} but endpoint exists with different HTTP method",
+                            suggested_fix=f"Update the HTTP method in the caller to match the endpoint definition",
+                        ))
                 else:
                     findings.append(Finding(
                         finding_type="phantom_call",
@@ -398,3 +454,44 @@ def _base_name(name: str) -> str:
 def _fuzzy_match(a: str, b: str) -> bool:
     """Check if two service names refer to the same service."""
     return _base_name(a) == _base_name(b)
+
+
+def _parameterize_path(path: str) -> str:
+    """Normalize path parameters to a canonical form for comparison.
+
+    Converts:
+      /remediation/%s/status  -> /remediation/:p/status
+      /remediation/%d/status  -> /remediation/:p/status
+      /tasks/:id              -> /tasks/:p
+      /tasks/{id}             -> /tasks/:p
+    """
+    # Go fmt.Sprintf specifiers: %s, %d, %v, %+v, etc.
+    result = re.sub(r'%[+#-]?[sdvfgtq]', ':p', path)
+    # Gin/mux path params: :name
+    result = re.sub(r':(\w+)', ':p', result)
+    # OpenAPI/Express path params: {name}
+    result = re.sub(r'\{[^}]+\}', ':p', result)
+    return result
+
+
+def _paths_match(call_path: str, endpoint_path: str) -> bool:
+    """Check if a parameterized call path matches a parameterized endpoint path.
+
+    Handles cases like:
+      /incidents/service/:p  matches  /incidents/service/:p
+      /episodes/:p          matches  /episodes/:p
+    """
+    call_parts = call_path.strip("/").split("/")
+    ep_parts = endpoint_path.strip("/").split("/")
+
+    if len(call_parts) != len(ep_parts):
+        return False
+
+    for cp, ep in zip(call_parts, ep_parts):
+        if cp == ep:
+            continue
+        if cp == ":p" or ep == ":p":
+            continue
+        return False
+
+    return True

@@ -29,6 +29,7 @@ class Call:
     resolution_method: str   # "discovery", "ports", "hardcoded", "serviceURLs"
     request_fields: list = field(default_factory=list)
     retry_config: Optional[dict] = None
+    method_explicit: bool = False  # True if method was explicitly detected (not defaulted to GET)
 
 
 @dataclass
