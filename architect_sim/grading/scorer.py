@@ -118,7 +118,36 @@ def score_system(blueprints: dict, findings: list, flow_traces: list, config) ->
                                         '/memo', '/note', '/query', '/search',
                                         '/federation', '/republic', '/hdns',
                                         '/proxy', '/route', '/stream',
-                                        '/generate', '/evaluate', '/embed']):
+                                        '/generate', '/evaluate', '/embed',
+                                        # REST CRUD / data management
+                                        '/census', '/bulk', '/export', '/import',
+                                        '/stats', '/summary', '/history',
+                                        '/lifecycle', '/entities', '/events',
+                                        # Planning / orchestration
+                                        '/plan', '/context', '/delegate',
+                                        '/optimize', '/validate', '/execute',
+                                        # Service management
+                                        '/proposals', '/errors', '/conflicts',
+                                        '/restart', '/remediat', '/check',
+                                        # Protocol endpoints
+                                        '/a2a/', '/messages', '/rpc',
+                                        '/webhook', '/callback', '/notify',
+                                        # Auth / user
+                                        '/auth', '/login', '/register', '/token',
+                                        '/user', '/profile', '/session',
+                                        # Media / content
+                                        '/image', '/video', '/audio', '/media',
+                                        '/upload', '/download', '/render',
+                                        # ML / inference
+                                        '/predict', '/infer', '/classify',
+                                        '/train', '/finetune', '/benchmark',
+                                        '/completions', '/rerank',
+                                        # Discovery / registry
+                                        '/discover', '/registry', '/catalog',
+                                        '/manifest', '/ports',
+                                        # Testing / debug
+                                        '/test', '/ping', '/echo', '/inspect',
+                                        '/:id', '/:name']):
                 infra_orphans += 1
     orphan_count = max(0, type_counts.get("orphan_endpoint", 0) - infra_orphans)
     reachable = total_endpoints - orphan_count

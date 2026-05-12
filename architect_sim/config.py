@@ -480,18 +480,31 @@ class Config:
             "internal/services", "cmd", "packages", "modules",
         ]
 
-        # Check two levels deep
-        for d in self.root.iterdir():
+        # Check two levels deep, preferring dirs with more service subdirs
+        all_matches = []
+        for d in sorted(self.root.iterdir(), key=lambda p: p.name):
             if d.is_dir() and not d.name.startswith("."):
                 for sub in candidates:
                     full = d / sub if "/" not in sub else self.root / sub
                     if full.is_dir() and self._looks_like_services_dir(full):
-                        return full
+                        # Count how many service subdirs — prefer the one with more
+                        svc_count = sum(1 for sd in full.iterdir()
+                                       if sd.is_dir() and not sd.name.startswith(".")
+                                       and self._detect_language(sd) != "unknown")
+                        all_matches.append((svc_count, full))
 
         for sub in candidates:
             full = self.root / sub
             if full.is_dir() and self._looks_like_services_dir(full):
-                return full
+                svc_count = sum(1 for sd in full.iterdir()
+                               if sd.is_dir() and not sd.name.startswith(".")
+                               and self._detect_language(sd) != "unknown")
+                all_matches.append((svc_count, full))
+
+        if all_matches:
+            # Return the directory with the most service subdirs
+            all_matches.sort(key=lambda x: x[0], reverse=True)
+            return all_matches[0][1]
 
         if self._looks_like_services_dir(self.root):
             return self.root
