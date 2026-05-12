@@ -13,13 +13,13 @@ GIN_GROUP_RE = re.compile(
     re.MULTILINE
 )
 
-# Mux patterns
+# Mux patterns — handler can be a simple identifier OR a wrapped call like s.withMiddleware(s.handler)
 MUX_ROUTE_RE = re.compile(
-    r'(\w+)\.HandleFunc\(\s*"([^"]+)"\s*,\s*([\w.]+)\)',
+    r'(\w+)\.HandleFunc\(\s*"([^"]+)"\s*,\s*([^)]+)\)',
     re.MULTILINE
 )
 MUX_METHOD_RE = re.compile(
-    r'\.HandleFunc\(\s*"([^"]+)"\s*,\s*[\w.]+\)\s*\.Methods\(\s*([^)]+)\)',
+    r'\.HandleFunc\(\s*"([^"]+)"\s*,\s*[^)]+\)\s*\.Methods\(\s*([^)]+)\)',
     re.MULTILINE
 )
 
@@ -72,7 +72,7 @@ def extract_go_routes(service_name: str, port: int, source_dir: str) -> list:
         # Use a combined regex that captures path, handler, and method together
         # to avoid the method_map overwrite problem (same path, different methods)
         MUX_FULL_RE = re.compile(
-            r'(\w+)\.HandleFunc\(\s*"([^"]+)"\s*,\s*([\w.]+)\)(?:\s*\.Methods\(\s*([^)]+)\))?',
+            r'(\w+)\.HandleFunc\(\s*"([^"]+)"\s*,\s*([^)]+)\)(?:\s*\.Methods\(\s*([^)]+)\))?',
             re.MULTILINE
         )
         for match in MUX_FULL_RE.finditer(content):

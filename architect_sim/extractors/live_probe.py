@@ -184,7 +184,7 @@ def probe_health_endpoints(config) -> list:
 def probe_embedding_dimensions(config) -> list:
     """Check that embedding service returns correct dimensions for each tier."""
     findings = []
-    expected = {"mini": 384, "base": 768, "large": 1024, "deep": 2048}
+    expected = {"mini": 384, "base": 768, "large": 1024, "deep": 2000}
 
     for tier, expected_dim in expected.items():
         resp = _http_get(f"http://127.0.0.1:8191/embed", timeout=10)
