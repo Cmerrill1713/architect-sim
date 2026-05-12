@@ -5,7 +5,7 @@ from ..models import Endpoint
 
 # Gin patterns
 GIN_ROUTE_RE = re.compile(
-    r'(\w+)\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\(\s*"([^"]+)"\s*,\s*([\w.]+)',
+    r'(\w+)\.(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\(\s*"([^"]*)"\s*,\s*([\w.]+)',
     re.MULTILINE
 )
 GIN_GROUP_RE = re.compile(
