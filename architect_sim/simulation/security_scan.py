@@ -519,7 +519,28 @@ def _check_patterns(patterns: list, content: str, file_path: str, service: str, 
             if pat["name"] == "Sensitive Data in Logs":
                 if any(x in line for x in ['disabled', 'enabled', 'missing', 'not set',
                                              'configured', 'initialized', 'no secret',
-                                             'REDACTED', 'masked', '***']):
+                                             'REDACTED', 'masked', '***',
+                                             'redis.Del', '.Del(', 'log.Fatal("Failed']):
+                    continue
+
+            # Skip safe shell exec when args come from hardcoded script map
+            if pat["name"] == "Unsafe Shell Exec (Go)":
+                context_window = content[max(0, match.start()-1000):match.start()+200]
+                if 'scripts/' in context_window and ('map[string]' in content or 'launchctl' in context_window):
+                    continue
+
+            # Skip Database URL with Password when using localhost defaults
+            if pat["name"] == "Database URL with Password":
+                if 'localhost' in line or '127.0.0.1' in line:
+                    if 'os.environ.get' in line or 'os.Getenv' in line or 'Getenv' in content[:match.start()]:
+                        continue
+
+            # Skip path traversal when input is hex digest or sanitized
+            if pat["name"] == "Path Traversal (Python)":
+                context_window = content[max(0, match.start()-500):match.start()+100]
+                if 'hexdigest' in context_window or 'hashlib' in context_window:
+                    continue
+                if 'urllib.parse.quote' in context_window:
                     continue
 
             findings.append(Finding(

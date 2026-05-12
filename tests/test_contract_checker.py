@@ -18,7 +18,7 @@ def test_finds_phantom_calls(config):
     blueprints = extract_all(config)
     findings, _ = simulate_all(blueprints, config)
     # auth-service calls user-service:8080/api/users/123
-    # Contract checker does exact path matching, so /api/users/123
-    # won't match /api/users/:id — it should appear as a phantom call
+    # Dynamic route matching should resolve /api/users/:id, so this is not a
+    # phantom call anymore.
     phantoms = [f for f in findings if f.finding_type == "phantom_call"]
-    assert any("/api/users/123" in f.endpoint for f in phantoms)
+    assert not any("/api/users/123" in f.endpoint for f in phantoms)
