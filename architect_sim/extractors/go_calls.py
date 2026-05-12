@@ -158,6 +158,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
             port = int(port_str)
             line_num = content[:match.start()].count("\n") + 1
             method, method_explicit = _detect_http_method(content, match.start())
+            path = _find_concatenated_path_after_literal(content, match.end(), path or "/")
 
             # Skip self-references (service calling its own port)
             own_port = config.resolve_service(service_name)
@@ -171,7 +172,7 @@ def extract_go_calls(service_name: str, source_dir: str, config) -> list:
                 callee_service=config.resolve_port(port),
                 callee_port=port,
                 method=method,
-                path=path or "/",
+                path=path,
                 file_path=file_str,
                 line_number=line_num,
                 resolution_method="hardcoded",
@@ -297,6 +298,40 @@ def _find_path_after_resolve(content: str, pos: int) -> str:
     if match:
         return match.group(1)
     return "/"
+
+
+def _find_concatenated_path_after_literal(content: str, pos: int, path: str) -> str:
+    """Reconstruct simple Go URL string concatenations after a literal URL."""
+    out = path or "/"
+    i = pos
+
+    while True:
+        plus = re.match(r'\s*\+\s*', content[i:])
+        if not plus:
+            break
+        i += plus.end()
+
+        literal = re.match(r'"([^"\\]*(?:\\.[^"\\]*)*)"', content[i:])
+        if literal:
+            out += literal.group(1)
+            i += literal.end()
+            continue
+
+        expr = re.match(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*|\[[^\]]+\])*', content[i:])
+        if not expr:
+            break
+        out += ":" + _param_name(expr.group(0))
+        i += expr.end()
+
+    return out
+
+
+def _param_name(expr: str) -> str:
+    """Convert a simple Go expression to a stable path parameter name."""
+    cleaned = re.sub(r'\[[^\]]+\]', '', expr)
+    name = cleaned.split(".")[-1] if cleaned else "param"
+    snake = re.sub(r'(?<!^)([A-Z])', r'_\1', name).lower()
+    return snake or "param"
 
 
 def _has_nearby_retry(content: str, pos: int) -> bool:
